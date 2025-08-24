@@ -5,19 +5,12 @@ services:
   # Main Telegram Bot Web Service
   - type: web
     name: stock-tracker-bot
-    runtime: python
-    env: python
+    runtime: docker
     region: singapore  # Closest to Israel for better latency
     plan: starter  # Free tier - can upgrade to standard/pro later
     
-    # Build Configuration
-    buildCommand: |
-      pip install --upgrade pip setuptools wheel
-      pip install --only-binary=:all: -r requirements.txt
-      playwright install chromium --with-deps
-    
-    # Start Command - runs the FastAPI server with bot
-    startCommand: python main.py
+    # Docker build configuration
+    dockerfilePath: ./Dockerfile
     
     # Auto Deploy Settings
     autoDeploy: true
@@ -99,8 +92,7 @@ services:
       - name: your-bot-domain.onrender.com  # Replace with your custom domain
     
     # Advanced Settings
-    dockerCommand: ""  # Using native Python runtime
-    dockerfilePath: ""  # Not using Docker
+    dockerCommand: python main.py
     
     # Monitoring & Alerts
     alerts:
@@ -122,19 +114,15 @@ services:
   # Background Jobs Service (Optional - for heavy processing)
   - type: worker
     name: stock-checker-worker
-    runtime: python
-    env: python
+    runtime: docker
     region: singapore
     plan: starter
     
-    # Build same as web service
-    buildCommand: |
-      pip install --upgrade pip setuptools wheel
-      pip install --only-binary=:all: -r requirements.txt
-      playwright install chromium --with-deps
+    # Use same Dockerfile as web service
+    dockerfilePath: ./Dockerfile
     
     # Worker command - runs only the scheduler
-    startCommand: python -c "
+    dockerCommand: python -c "
       import asyncio
       from database import DatabaseManager
       from bot import StockTrackerBot
