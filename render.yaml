@@ -1,0 +1,295 @@
+# Render Deployment Configuration for Stock Tracker Bot
+# Optimized for 2025 with latest Render features
+
+services:
+  # Main Telegram Bot Web Service
+  - type: web
+    name: stock-tracker-bot
+    runtime: python
+    env: python
+    region: singapore  # Closest to Israel for better latency
+    plan: starter  # Free tier - can upgrade to standard/pro later
+    
+    # Build Configuration
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      playwright install chromium --with-deps
+    
+    # Start Command - runs the FastAPI server with bot
+    startCommand: python main.py
+    
+    # Auto Deploy Settings
+    autoDeploy: true
+    branch: main
+    
+    # Health Check Configuration
+    healthCheckPath: /health
+    
+    # Environment Variables
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      
+      - key: PORT
+        value: 10000
+      
+      - key: PYTHON_VERSION
+        value: "3.12"
+      
+      - key: LOG_LEVEL
+        value: INFO
+      
+      # Bot Configuration
+      - key: TELEGRAM_TOKEN
+        sync: false  # Must be set manually in Render dashboard
+      
+      - key: WEBHOOK_URL
+        generateValue: true  # Render will auto-generate the webhook URL
+      
+      # Database Configuration
+      - key: MONGODB_URI
+        sync: false  # Connect to MongoDB Atlas
+      
+      - key: DB_NAME
+        value: stock_tracker_production
+      
+      # Scraping Settings
+      - key: SCRAPER_TIMEOUT
+        value: "30"
+      
+      - key: MAX_CONCURRENT_REQUESTS
+        value: "10"
+      
+      - key: DEFAULT_CHECK_INTERVAL
+        value: "60"  # 1 hour
+      
+      - key: MIN_CHECK_INTERVAL
+        value: "10"   # 10 minutes
+      
+      - key: MAX_CHECK_INTERVAL
+        value: "1440" # 24 hours
+      
+      # Rate Limiting
+      - key: RATE_LIMIT_PER_USER
+        value: "50"
+      
+      - key: RATE_LIMIT_WINDOW
+        value: "86400"  # 24 hours in seconds
+      
+      # User Agent for scraping
+      - key: USER_AGENT
+        value: "StockTracker Bot/1.0 (https://your-bot.onrender.com)"
+    
+    # Scaling Configuration
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+      targetCPUPercent: 70
+      targetMemoryPercent: 80
+    
+    # Resource Limits (Starter Plan)
+    disk:
+      name: stock-tracker-disk
+      mountPath: /opt/render/project/.cache
+      sizeGB: 1
+    
+    # Network Configuration
+    domains:
+      - name: your-bot-domain.onrender.com  # Replace with your custom domain
+    
+    # Advanced Settings
+    dockerCommand: ""  # Using native Python runtime
+    dockerfilePath: ""  # Not using Docker
+    
+    # Monitoring & Alerts
+    alerts:
+      - rule: cpu
+        operator: ">"
+        value: "80"
+        duration: "5m"
+      
+      - rule: memory  
+        operator: ">"
+        value: "80"
+        duration: "5m"
+      
+      - rule: response_time
+        operator: ">"
+        value: "5000"  # 5 seconds
+        duration: "2m"
+
+  # Background Jobs Service (Optional - for heavy processing)
+  - type: worker
+    name: stock-checker-worker
+    runtime: python
+    env: python
+    region: singapore
+    plan: starter
+    
+    # Build same as web service
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      playwright install chromium --with-deps
+    
+    # Worker command - runs only the scheduler
+    startCommand: python -c "
+      import asyncio
+      from database import DatabaseManager
+      from bot import StockTrackerBot
+      from config import config
+      import logging
+      
+      logging.basicConfig(level=logging.INFO)
+      
+      async def run_worker():
+          db = DatabaseManager()
+          await db.connect()
+          bot = StockTrackerBot(db)
+          await bot.start_scheduler()
+          
+          # Keep alive
+          try:
+              while True:
+                  await asyncio.sleep(60)
+          except KeyboardInterrupt:
+              await bot.stop_scheduler()
+              await db.close()
+      
+      asyncio.run(run_worker())
+      "
+    
+    # Same environment variables as web service
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      
+      - key: PYTHON_VERSION
+        value: "3.12"
+      
+      - key: LOG_LEVEL
+        value: INFO
+        
+      - key: TELEGRAM_TOKEN
+        sync: false
+      
+      - key: MONGODB_URI
+        sync: false
+      
+      - key: DB_NAME
+        value: stock_tracker_production
+      
+      - key: SCRAPER_TIMEOUT
+        value: "30"
+      
+      - key: MAX_CONCURRENT_REQUESTS
+        value: "5"  # Lower for worker
+      
+      - key: DEFAULT_CHECK_INTERVAL
+        value: "30"  # More frequent for dedicated worker
+      
+      - key: USER_AGENT
+        value: "StockTracker Worker/1.0"
+
+# Database Service (if using Render PostgreSQL instead of MongoDB Atlas)
+# databases:
+#   - name: stock-tracker-db
+#     databaseName: stock_tracker
+#     user: stock_user
+#     region: singapore
+#     plan: starter  # Free PostgreSQL
+#     postInitCommands:
+#       - psql -d $DATABASE_URL -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+# Redis Service (Optional - for caching and session storage)
+# - type: redis
+#   name: stock-tracker-redis
+#   region: singapore
+#   plan: starter  # Free Redis
+#   maxmemoryPolicy: allkeys-lru
+#   evictionPolicy: volatile-lru
+#   ipAllowList:
+#     - source: 0.0.0.0/0  # Allow all IPs (adjust as needed)
+
+# Cron Jobs (Alternative to background worker)
+# cronJobs:
+#   - name: stock-checker-cron
+#     schedule: "*/30 * * * *"  # Every 30 minutes
+#     startCommand: python -c "
+#       import asyncio
+#       from database import DatabaseManager
+#       from bot import StockTrackerBot
+#       
+#       async def check_stocks():
+#           db = DatabaseManager()
+#           await db.connect()
+#           bot = StockTrackerBot(db)
+#           await bot._check_all_stocks()
+#           await db.close()
+#       
+#       asyncio.run(check_stocks())
+#       "
+#     
+#     # Same environment as main service
+#     envVars:
+#       - key: MONGODB_URI
+#         sync: false
+#       
+#       - key: TELEGRAM_TOKEN
+#         sync: false
+
+# Static Site (Optional - for bot documentation/landing page)
+# - type: static
+#   name: stock-tracker-docs
+#   staticPublishPath: ./docs
+#   buildCommand: |
+#     echo "Building documentation..."
+#     mkdir -p docs
+#     echo "<h1>Stock Tracker Bot</h1><p>Telegram bot for tracking product availability.</p>" > docs/index.html
+#   
+#   # Custom domain
+#   domains:
+#     - name: docs.your-domain.com
+#   
+#   # Headers for security
+#   headers:
+#     - path: /*
+#       name: X-Content-Type-Options
+#       value: nosniff
+#     
+#     - path: /*
+#       name: X-Frame-Options  
+#       value: DENY
+#     
+#     - path: /*
+#       name: X-XSS-Protection
+#       value: 1; mode=block
+
+# Environment Groups (for shared configuration)
+envGroups:
+  - name: bot-config
+    envVars:
+      - key: SCRAPER_TIMEOUT
+        value: "30"
+      
+      - key: MAX_CONCURRENT_REQUESTS
+        value: "10"
+      
+      - key: DEFAULT_CHECK_INTERVAL
+        value: "60"
+
+# Preview Environments (for testing)
+previewsEnabled: true
+previewsExpireAfterDays: 7
+
+# Build Cache Settings
+buildFilter:
+  paths:
+    - requirements.txt
+    - "**/*.py"
+    - render.yaml
+  ignoredPaths:
+    - README.md
+    - "*.md"
+    - .gitignore
