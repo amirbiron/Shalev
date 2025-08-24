@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libatk-bridge2.0-0 libgtk-3-0 libx11-xcb1 libxcb1 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libxshmfence1 libdrm2 \
     libxext6 libxkbcommon0 libpango-1.0-0 libcairo2 libatspi2.0-0 libx11-6 \
-    libxss1 libxtst6 libxrender1 libxi6 fonts-liberation fonts-unifont fonts-ubuntu \
+    libxss1 libxtst6 libxrender1 libxi6 fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
     && python -m playwright install chromium
 
