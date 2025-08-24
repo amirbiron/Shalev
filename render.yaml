@@ -12,8 +12,8 @@ services:
     
     # Build Configuration
     buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
+      pip install --upgrade pip setuptools wheel
+      pip install --only-binary=:all: -r requirements.txt
       playwright install chromium --with-deps
     
     # Start Command - runs the FastAPI server with bot
@@ -129,8 +129,8 @@ services:
     
     # Build same as web service
     buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
+      pip install --upgrade pip setuptools wheel
+      pip install --only-binary=:all: -r requirements.txt
       playwright install chromium --with-deps
     
     # Worker command - runs only the scheduler

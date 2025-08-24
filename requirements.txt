@@ -20,6 +20,8 @@ APScheduler==3.10.4
 python-dotenv==1.0.1
 
 # Data Processing
+# Numeric core pinned to ensure prebuilt wheels on Py3.12
+numpy==1.26.4
 pandas==2.2.2
 
 # Logging & Monitoring
