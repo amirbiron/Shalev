@@ -5,7 +5,7 @@ services:
   # Main Telegram Bot Web Service
   - type: web
     name: stock-tracker-bot
-    runtime: docker
+    env: docker
     region: singapore  # Closest to Israel for better latency
     plan: starter  # Free tier - can upgrade to standard/pro later
     
@@ -27,8 +27,7 @@ services:
       - key: PORT
         value: 10000
       
-      - key: PYTHON_VERSION
-        value: "3.12"
+      # Python version controlled by Dockerfile (python:3.12-slim)
       
       - key: LOG_LEVEL
         value: INFO
@@ -114,7 +113,7 @@ services:
   # Background Jobs Service (Optional - for heavy processing)
   - type: worker
     name: stock-checker-worker
-    runtime: docker
+    env: docker
     region: singapore
     plan: starter
     
@@ -153,8 +152,7 @@ services:
       - key: ENVIRONMENT
         value: production
       
-      - key: PYTHON_VERSION
-        value: "3.12"
+      # Python version controlled by Dockerfile (python:3.12-slim)
       
       - key: LOG_LEVEL
         value: INFO
