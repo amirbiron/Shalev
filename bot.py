@@ -228,7 +228,7 @@ class StockTrackerBot:
             tracking = ProductTracking(
                 user_id=user_id,
                 product_url=url,
-                product_name=product_info['name'],
+                product_name=product_info.name,
                 store_name=store_info['name'],
                 store_id=store_info['store_id'],
                 check_interval=config.DEFAULT_CHECK_INTERVAL,
@@ -258,9 +258,9 @@ class StockTrackerBot:
             
             await update.message.reply_text(
                 f"🎉 נוסף מעקב חדש!\n\n"
-                f"📦 **{product_info['name']}**\n"
+                f"📦 **{product_info.name}**\n"
                 f"🏪 {store_info['name']}\n"
-                f"📊 סטטוס נוכחי: {'במלאי' if product_info['in_stock'] else 'אזל מהמלאי'}\n\n"
+                f"📊 סטטוס נוכחי: {'במלאי' if product_info.in_stock else 'אזל מהמלאי'}\n\n"
                 f"⏰ באיזו תדירות לבדוק?",
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
