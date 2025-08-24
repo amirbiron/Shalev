@@ -721,7 +721,9 @@ class StockTrackerBot:
             
             for store_id, store_config in SUPPORTED_CLUBS.items():
                 store_domain = urlparse(store_config['base_url']).netloc.replace('www.', '')
-                if domain == store_domain:
+                # Accept either the primary base_url domain or any additional domains listed
+                extra_domains = set([d.replace('www.', '') for d in store_config.get('domains', [])])
+                if domain == store_domain or domain in extra_domains:
                     return {
                         'store_id': store_id,
                         'name': store_config['name']
