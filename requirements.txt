@@ -1,0 +1,36 @@
+# Telegram Bot Framework - Latest 2025 Versions
+python-telegram-bot==22.3
+
+# Database
+pymongo==4.14.1
+
+# Web Scraping & HTTP Requests
+requests==2.31.0
+beautifulsoup4==4.12.3
+playwright==1.46.0
+
+# Async Support
+asyncio-mqtt==0.16.2
+aiohttp==3.9.5
+
+# Task Scheduling
+APScheduler==3.10.4
+
+# Environment Variables
+python-dotenv==1.0.1
+
+# Data Processing
+pandas==2.2.2
+
+# Logging & Monitoring
+structlog==24.4.0
+
+# Date & Time
+python-dateutil==2.9.0
+
+# Web Server for Health Check (Render requirement)
+uvicorn==0.30.5
+fastapi==0.112.0
+
+# Optional: Enhanced async performance
+uvloop==0.19.0; platform_system != "Windows"
