@@ -1,0 +1,263 @@
+"""
+Stock Tracker Telegram Bot - Main Entry Point
+Optimized for Render deployment with 2025 best practices
+"""
+
+import asyncio
+import logging
+import sys
+import signal
+from contextlib import asynccontextmanager
+from typing import Optional
+
+# FastAPI for health check (Render requirement)
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import uvicorn
+
+# Telegram Bot
+from telegram import Bot
+from telegram.ext import Application
+
+# Local imports
+from config import config, BOT_MESSAGES
+from bot import StockTrackerBot
+from database import DatabaseManager
+
+# Configure logging
+logging.basicConfig(
+    format=config.LOG_FORMAT,
+    level=getattr(logging, config.LOG_LEVEL.upper()),
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Global variables for bot and database
+bot_instance: Optional[StockTrackerBot] = None
+db_manager: Optional[DatabaseManager] = None
+telegram_app: Optional[Application] = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle"""
+    global bot_instance, db_manager, telegram_app
+    
+    logger.info("🚀 Starting Stock Tracker Bot...")
+    
+    try:
+        # Initialize database
+        logger.info("📊 Connecting to database...")
+        db_manager = DatabaseManager()
+        await db_manager.connect()
+        
+        # Initialize bot
+        logger.info("🤖 Initializing Telegram bot...")
+        bot_instance = StockTrackerBot(db_manager)
+        
+        # Create Telegram application
+        telegram_app = (
+            Application.builder()
+            .token(config.TELEGRAM_TOKEN)
+            .build()
+        )
+        
+        # Setup bot handlers
+        bot_instance.setup_handlers(telegram_app)
+        
+        # Start the bot
+        if config.ENVIRONMENT == 'production' and config.WEBHOOK_URL:
+            # Production: Use webhook
+            logger.info(f"🌐 Starting webhook on {config.WEBHOOK_URL}")
+            await telegram_app.bot.set_webhook(
+                url=f"{config.WEBHOOK_URL}/telegram-webhook",
+                allowed_updates=['message', 'callback_query']
+            )
+            await telegram_app.initialize()
+            await telegram_app.start()
+        else:
+            # Development: Use polling
+            logger.info("🔄 Starting polling mode...")
+            await telegram_app.initialize()
+            await telegram_app.start()
+            # Start polling in background
+            asyncio.create_task(telegram_app.updater.start_polling())
+        
+        # Start the scheduler
+        logger.info("⏰ Starting stock check scheduler...")
+        await bot_instance.start_scheduler()
+        
+        logger.info("✅ Bot started successfully!")
+        
+        yield  # Application is running
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to start bot: {e}")
+        raise
+    finally:
+        # Cleanup
+        logger.info("🛑 Shutting down bot...")
+        
+        if bot_instance:
+            await bot_instance.stop_scheduler()
+        
+        if telegram_app:
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+        
+        if db_manager:
+            await db_manager.close()
+        
+        logger.info("👋 Bot stopped.")
+
+# Create FastAPI app for health checks and webhook
+app = FastAPI(
+    title="Stock Tracker Bot",
+    description="Telegram bot for tracking product availability",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+@app.get("/")
+async def root():
+    """Root endpoint for basic health check"""
+    return {
+        "status": "running",
+        "bot": "Stock Tracker Telegram Bot",
+        "version": "1.0.0",
+        "environment": config.ENVIRONMENT
+    }
+
+@app.get("/health")
+async def health_check():
+    """Detailed health check for monitoring"""
+    try:
+        # Check database connection
+        db_healthy = await db_manager.health_check() if db_manager else False
+        
+        # Check bot status
+        bot_healthy = telegram_app.running if telegram_app else False
+        
+        # Check scheduler status
+        scheduler_healthy = (
+            bot_instance.scheduler.running 
+            if bot_instance and hasattr(bot_instance, 'scheduler') 
+            else False
+        )
+        
+        overall_health = db_healthy and bot_healthy
+        
+        return JSONResponse(
+            status_code=200 if overall_health else 503,
+            content={
+                "status": "healthy" if overall_health else "unhealthy",
+                "components": {
+                    "database": "healthy" if db_healthy else "unhealthy",
+                    "telegram_bot": "healthy" if bot_healthy else "unhealthy",
+                    "scheduler": "healthy" if scheduler_healthy else "unhealthy"
+                },
+                "environment": config.ENVIRONMENT,
+                "timestamp": asyncio.get_event_loop().time()
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": asyncio.get_event_loop().time()
+            }
+        )
+
+@app.post("/telegram-webhook")
+async def telegram_webhook(request):
+    """Handle Telegram webhook (production only)"""
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Bot not initialized")
+    
+    try:
+        # Get update from request
+        update_data = await request.json()
+        
+        # Process update
+        from telegram import Update
+        update = Update.de_json(update_data, telegram_app.bot)
+        
+        # Add to update queue
+        await telegram_app.update_queue.put(update)
+        
+        return {"status": "ok"}
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/stats")
+async def get_stats():
+    """Get bot usage statistics"""
+    if not bot_instance:
+        raise HTTPException(status_code=503, detail="Bot not initialized")
+    
+    try:
+        stats = await bot_instance.get_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    # FastAPI will handle the cleanup through lifespan
+    sys.exit(0)
+
+async def run_development():
+    """Run in development mode with polling"""
+    logger.info("🔧 Running in development mode...")
+    
+    # Just run the FastAPI server, lifespan will handle the bot
+    config_uvicorn = uvicorn.Config(
+        app=app,
+        host="0.0.0.0",
+        port=config.WEBHOOK_PORT,
+        log_level=config.LOG_LEVEL.lower()
+    )
+    server = uvicorn.Server(config_uvicorn)
+    await server.serve()
+
+def main():
+    """Main entry point"""
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    logger.info("🎯 Stock Tracker Bot starting...")
+    logger.info(f"Environment: {config.ENVIRONMENT}")
+    logger.info(f"Port: {config.WEBHOOK_PORT}")
+    
+    try:
+        if config.ENVIRONMENT == 'production':
+            # Production: Run with uvicorn server
+            uvicorn.run(
+                app,
+                host="0.0.0.0",
+                port=config.WEBHOOK_PORT,
+                log_level=config.LOG_LEVEL.lower()
+            )
+        else:
+            # Development: Run with asyncio
+            asyncio.run(run_development())
+            
+    except KeyboardInterrupt:
+        logger.info("👋 Received keyboard interrupt, shutting down...")
+    except Exception as e:
+        logger.error(f"💥 Fatal error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
