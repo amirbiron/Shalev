@@ -1,8 +1,7 @@
 # Telegram Bot Framework - Latest 2025 Versions
 python-telegram-bot==22.3
 
-# Database
-pymongo==4.14.1
+# Database (let motor resolve compatible pymongo)
 motor==3.6.0
 
 # Web Scraping & HTTP Requests
