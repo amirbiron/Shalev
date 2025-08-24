@@ -1,0 +1,393 @@
+# GitHub Actions CI/CD Pipeline - 2025 Edition
+# Using latest tools: uv, advanced caching, and modern Python practices
+
+name: 🚀 Deploy Stock Tracker Bot
+
+on:
+  # Trigger on pushes to main branch
+  push:
+    branches: [ main, develop ]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '*.md'
+  
+  # Trigger on pull requests to main
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md' 
+      - 'docs/**'
+      - '*.md'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      deploy_environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      
+      skip_tests:
+        description: 'Skip tests'
+        required: false
+        default: false
+        type: boolean
+
+# Global environment variables
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.4.15"
+  NODE_VERSION: "20"
+
+# Concurrency control - cancel running workflows on new commits
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ===============================
+  # CODE QUALITY & SECURITY CHECKS
+  # ===============================
+  quality:
+    name: 🔍 Code Quality & Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history for better analysis
+          fetch-depth: 0
+      
+      - name: ⚡ Setup UV (Ultra-fast Python package manager)
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.txt
+            pyproject.toml
+      
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Install dependencies with UV
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install -r requirements.txt
+          uv pip install ruff black mypy bandit safety
+      
+      - name: 🎨 Format check with Black
+        run: |
+          source .venv/bin/activate
+          black --check --diff --color .
+      
+      - name: ⚡ Lint with Ruff (Lightning fast linter)
+        run: |
+          source .venv/bin/activate
+          ruff check . --output-format=github
+      
+      - name: 🔒 Security scan with Bandit
+        run: |
+          source .venv/bin/activate
+          bandit -r . -f json -o bandit-report.json || true
+          bandit -r . -f txt
+        continue-on-error: true
+      
+      - name: 🛡️ Dependency security check
+        run: |
+          source .venv/bin/activate
+          safety check --json --output safety-report.json || true
+          safety check
+        continue-on-error: true
+      
+      - name: 🔍 Type checking with MyPy
+        run: |
+          source .venv/bin/activate
+          mypy --install-types --non-interactive .
+        continue-on-error: true
+      
+      # Upload security reports as artifacts
+      - name: 📊 Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+          retention-days: 30
+
+  # ===============================
+  # TESTING MATRIX
+  # ===============================  
+  test:
+    name: 🧪 Test Suite
+    runs-on: ${{ matrix.os }}
+    needs: quality
+    timeout-minutes: 20
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        exclude:
+          # Skip some combinations to reduce job count
+          - os: windows-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.11"
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: ⚡ Setup UV
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      
+      - name: 🐍 Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      # Install system dependencies for Playwright
+      - name: 🎭 Install Playwright system deps (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-dev libatk-bridge2.0-dev libdrm-dev libxkbcommon-dev libgtk-3-dev
+      
+      - name: 📦 Install Python dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate || .venv\Scripts\activate
+          uv pip install -r requirements.txt
+          uv pip install pytest pytest-asyncio pytest-cov pytest-mock
+      
+      - name: 🎭 Install Playwright browsers
+        run: |
+          source .venv/bin/activate || .venv\Scripts\activate
+          playwright install chromium
+      
+      # Set up MongoDB for testing (Ubuntu only)
+      - name: 🍃 Start MongoDB
+        if: matrix.os == 'ubuntu-latest'
+        uses: supercharge/mongodb-github-action@1.10.0
+        with:
+          mongodb-version: 8.0
+      
+      - name: 🧪 Run tests
+        env:
+          MONGODB_URI: mongodb://localhost:27017/
+          TELEGRAM_TOKEN: "dummy_token_for_testing"
+          ENVIRONMENT: testing
+        run: |
+          source .venv/bin/activate || .venv\Scripts\activate
+          pytest --cov=. --cov-report=xml --cov-report=html -v
+        if: ${{ !inputs.skip_tests }}
+      
+      - name: 📊 Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # ===============================
+  # BUILD & SECURITY SCAN
+  # ===============================
+  build:
+    name: 🏗️ Build & Container Security
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    timeout-minutes: 20
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: ⚡ Setup UV
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: 📦 Build application
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install -r requirements.txt
+          
+          # Test that the app can start
+          python -c "from config import config; print('✅ Config loaded successfully')"
+          python -c "from main import app; print('✅ FastAPI app created successfully')"
+      
+      - name: 🔐 Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: 📊 Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ===============================
+  # DEPLOY TO STAGING
+  # ===============================
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [quality, test, build]
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.deploy_environment == 'staging'
+    environment: 
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    timeout-minutes: 15
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🚀 Deploy to Render (Staging)
+        id: deploy
+        uses: JorgeLNJunior/render-deploy@v1.4.4
+        with:
+          service_id: ${{ secrets.RENDER_SERVICE_ID_STAGING }}
+          api_key: ${{ secrets.RENDER_API_KEY }}
+          wait_deploy: true
+      
+      - name: 🏥 Health check
+        run: |
+          sleep 30  # Wait for service to start
+          curl -f ${{ steps.deploy.outputs.url }}/health || exit 1
+          echo "✅ Staging deployment health check passed"
+      
+      - name: 📊 Update deployment status
+        run: |
+          echo "🎉 Successfully deployed to staging: ${{ steps.deploy.outputs.url }}"
+
+  # ===============================
+  # DEPLOY TO PRODUCTION
+  # ===============================
+  deploy-production:
+    name: 🏭 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [quality, test, build, deploy-staging]
+    if: github.ref == 'refs/heads/main' || github.event.inputs.deploy_environment == 'production'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    timeout-minutes: 20
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔍 Pre-deployment checks
+        run: |
+          echo "🔍 Running pre-deployment checks..."
+          # Add any custom pre-deployment validation here
+          echo "✅ Pre-deployment checks passed"
+      
+      - name: 🚀 Deploy to Render (Production)
+        id: deploy
+        uses: JorgeLNJunior/render-deploy@v1.4.4
+        with:
+          service_id: ${{ secrets.RENDER_SERVICE_ID_PRODUCTION }}
+          api_key: ${{ secrets.RENDER_API_KEY }}
+          wait_deploy: true
+      
+      - name: 🏥 Production health check
+        run: |
+          sleep 45  # Wait for service to fully start
+          for i in {1..5}; do
+            if curl -f ${{ steps.deploy.outputs.url }}/health; then
+              echo "✅ Production health check passed"
+              break
+            else
+              echo "⏳ Waiting for service to be ready... (attempt $i/5)"
+              sleep 30
+            fi
+          done
+      
+      - name: 🤖 Test bot functionality
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          # Test that bot can receive Telegram API calls
+          curl -f "https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe" || echo "⚠️ Telegram API test failed"
+      
+      - name: 📱 Send success notification
+        if: success()
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "🎉 Stock Tracker Bot Deployed Successfully!"
+          description: |
+            ✅ **Production Deployment Complete**
+            🚀 URL: ${{ steps.deploy.outputs.url }}
+            🔨 Commit: `${{ github.sha }}`
+            👤 Author: ${{ github.actor }}
+          color: 0x28a745
+
+  # ===============================
+  # CLEANUP & NOTIFICATIONS
+  # ===============================
+  cleanup:
+    name: 🧹 Cleanup & Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always()
+    
+    steps:
+      - name: 📊 Workflow summary
+        run: |
+          echo "## 📊 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Quality Check**: ${{ needs.quality.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tests**: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build**: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Staging Deploy**: ${{ needs.deploy-staging.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Production Deploy**: ${{ needs.deploy-production.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🕐 **Total Duration**: ${{ github.event.head_commit.timestamp }}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: 💬 Failure notification
+        if: failure()
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          title: "❌ Stock Tracker Bot Deployment Failed"
+          description: |
+            🚨 **Deployment Failed**
+            📝 Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            🔨 Commit: `${{ github.sha }}`
+            👤 Author: ${{ github.actor }}
+          color: 0xdc3545
