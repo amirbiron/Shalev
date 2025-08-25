@@ -64,7 +64,7 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
         'domains': ['meshekard.co.il', 'mashkarcard.co.il'],
         'stock_selector': '.product-stock-status',
         'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין'],
-        'requires_js': True,
+        'requires_js': False,
         'headers': {'User-Agent': 'Mozilla/5.0 (compatible; StockTracker/1.0)'}
     },
     'hot': {
