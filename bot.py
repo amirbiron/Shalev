@@ -228,6 +228,17 @@ class StockTrackerBot:
                     "❌ לא הצלחתי לטעון את פרטי המוצר. נסו שוב מאוחר יותר או שלחו קישור מוצר ישיר."
                 )
                 return WAITING_FOR_URL
+
+            # Detect invalid/placeholder product name to trigger manual rename prompt later
+            try:
+                normalized_name = (product_info.name or '').strip().strip('"\'')
+                invalid_product_name = (
+                    not normalized_name or
+                    len(normalized_name) < 3 or
+                    normalized_name in {store_info['name'].strip(), 'משקארד', 'לא זמין'}
+                )
+            except Exception:
+                invalid_product_name = False
             
             # Determine default check interval (user-specific if available)
             user_doc = await self.db.collections['users'].find_one({'user_id': user_id})
@@ -329,6 +340,14 @@ class StockTrackerBot:
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
             )
+
+            # If name looks invalid, prompt user for a manual name and store the pending tracking id
+            if invalid_product_name:
+                try:
+                    context.user_data['awaiting_rename_id'] = str(tracking_id)
+                    await update.message.reply_text("✍️ שם המוצר לא זוהה. שלחו עכשיו את השם המדויק, ואני אעדכן אותו במעקב.")
+                except Exception:
+                    pass
             
             return SETTING_FREQUENCY
             
@@ -663,10 +682,21 @@ class StockTrackerBot:
             if text.startswith(('http://', 'https://')):
                 return await self.handle_url_input(update, context)
             else:
-                # Guide user to use buttons
-                await update.message.reply_text(
-                    "🤖 השתמשו בכפתורים למטה או שלחו קישור למוצר שתרצו לעקוב אחריו."
-                )
+                # If awaiting manual rename, update the last tracking name
+                pending_id = context.user_data.get('awaiting_rename_id')
+                if pending_id:
+                    from bson import ObjectId
+                    new_name = text[:120].strip()
+                    if new_name:
+                        await self.db.collections['trackings'].update_one(
+                            {'_id': ObjectId(pending_id)},
+                            {'$set': {'product_name': new_name}}
+                        )
+                        context.user_data.pop('awaiting_rename_id', None)
+                        await update.message.reply_text(f"✅ השם עודכן ל: {new_name}")
+                        return
+                # Otherwise guide user
+                await update.message.reply_text("🤖 שלחו קישור למוצר כדי להתחיל לעקוב, או השתמשו בכפתורים למטה.")
                 
         except Exception as e:
             logger.error(f"❌ Error in generic message handler: {e}")
