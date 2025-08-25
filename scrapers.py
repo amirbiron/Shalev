@@ -257,17 +257,48 @@ class StockScraper:
         if not self.session:
             await self.init_session()
         try:
-            async with self.session.get(url, headers=self.headers) as response:
-                if response.status != 200:
-                    return ProductInfo(
-                        name=f"שגיאת HTTP {response.status}",
-                        price=None,
-                        in_stock=False,
-                        stock_text=f"HTTP {response.status}",
-                        last_checked="",
-                        error_message=f"HTTP {response.status}"
-                    )
-                html = await response.text()
+            # Merge headers with store-specific overrides (e.g., disable br for meshekard)
+            headers = dict(self.headers)
+            if 'headers' in store_config:
+                headers.update(store_config['headers'])
+
+            # Build candidate URLs (Meshkard popup first when ite_item exists)
+            candidates: List[str] = []
+            try:
+                parsed = urlparse(url)
+                q = parse_qs(parsed.query)
+                if 'ite_item' in q and q['ite_item'] and q['ite_item'][0]:
+                    item_id = q['ite_item'][0]
+                    popup_hosts = [
+                        'meshekard.co.il', 'www.meshekard.co.il',
+                        'mashkarcard.co.il', 'www.mashkarcard.co.il'
+                    ]
+                    for host in popup_hosts:
+                        candidates.append(f"https://{host}/index_popup_meshek.aspx?ite_item={item_id}")
+            except Exception:
+                pass
+            candidates.append(url)
+
+            html = None
+            last_status = None
+            for target in candidates:
+                try:
+                    async with self.session.get(target, headers=headers) as response:
+                        last_status = response.status
+                        if response.status == 200:
+                            html = await response.text()
+                            break
+                except Exception:
+                    continue
+            if html is None:
+                return ProductInfo(
+                    name=f"שגיאת HTTP {last_status if last_status is not None else 'לא ידוע'}",
+                    price=None,
+                    in_stock=False,
+                    stock_text=f"HTTP {last_status if last_status is not None else 'שגיאה'}",
+                    last_checked="",
+                    error_message=f"HTTP {last_status if last_status is not None else 'Unknown'}"
+                )
             soup = BeautifulSoup(html, 'html.parser')
             return self._extract_product_info_soup(soup, store_config, url)
         except asyncio.TimeoutError:
