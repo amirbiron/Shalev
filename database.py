@@ -31,7 +31,7 @@ class ProductTracking:
     """Product tracking model"""
     user_id: int
     product_url: str
-    product_key: Optional[str]
+    product_key: Optional[str] = None
     product_name: str
     store_name: str
     store_id: str
@@ -316,6 +316,7 @@ class DatabaseManager:
                 tracking = ProductTracking(
                     user_id=doc['user_id'],
                     product_url=doc['product_url'],
+                    product_key=doc.get('product_key'),
                     product_name=doc['product_name'],
                     store_name=doc['store_name'],
                     store_id=doc['store_id'],
