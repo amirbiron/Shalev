@@ -72,6 +72,10 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
             '#itemTitle',
             '[id*="lblTitle"]',
             '[id*="lblItem"]',
+            'input#hdTitle',
+            'input[name*="hdTitle"]',
+            'input[id*="ItemName"]',
+            'input[name*="ItemName"]',
             '.product-title',
             '.item-title',
             'h1'
