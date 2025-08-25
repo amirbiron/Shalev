@@ -258,7 +258,15 @@ class StockScraper:
                 await page.set_extra_http_headers(store_config['headers'])
             
             # Navigate to page with timeout
+            # Ensure we arrive at the meshekard popup if needed
             await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            try:
+                # meshekard redirects product.aspx?ite_item=... to index_popup_meshek.aspx
+                if 'meshekard.co.il' in url:
+                    # small wait for redirect chain and popup content
+                    await asyncio.sleep(1000/1000)
+            except Exception:
+                pass
             
             # Wait for content to load (store-specific)
             await asyncio.sleep(2)

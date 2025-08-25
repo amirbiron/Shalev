@@ -66,9 +66,9 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
         'name': 'משקארד',
         'base_url': 'https://www.mashkarcard.co.il',
         'domains': ['meshekard.co.il', 'mashkarcard.co.il'],
-        'stock_selector': '.product-stock-status',
-        'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין'],
-        'requires_js': False,
+        'stock_selector': '.product-stock-status, .availability, .stock, .in-stock, .out-of-stock',
+        'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין', 'אזל', 'זמנית לא זמין'],
+        'requires_js': True,
         'headers': {
             'User-Agent': 'Mozilla/5.0 (compatible; StockTracker/1.0)',
             # Avoid brotli to prevent decode issues with some environments

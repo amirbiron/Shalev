@@ -218,12 +218,14 @@ class StockTrackerBot:
                 return WAITING_FOR_URL
             
             # Get product info from scraper
+            logger.info(f"URL received: {url} | store={store_info['store_id']}")
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
             if (
                 not product_info or
                 getattr(product_info, 'error_message', None) or
                 product_info.name in {"שגיאה בטעינת המוצר", "שגיאת זמן קצוב", "שגיאה"}
             ):
+                logger.warning(f"Product info load failure for {url} | store={store_info['store_id']} | error={getattr(product_info, 'error_message', None)}")
                 await update.message.reply_text(
                     "❌ לא הצלחתי לטעון את פרטי המוצר. נסו שוב מאוחר יותר או שלחו קישור מוצר ישיר."
                 )
@@ -248,6 +250,7 @@ class StockTrackerBot:
             if product_key:
                 or_conditions.append({'product_key': product_key, 'store_id': store_info['store_id']})
             existing = await self.db.collections['trackings'].find_one({'user_id': user_id, '$or': or_conditions})
+            logger.info(f"Dedup check for user={user_id} url={url} key={product_key} -> existing={bool(existing)}")
 
             if existing and existing.get('status') == 'error':
                 # Revive ERROR tracking
