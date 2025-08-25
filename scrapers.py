@@ -222,7 +222,19 @@ class StockScraper:
                 pass
             await asyncio.sleep(2)
 
-            product_info = await self._extract_product_info_playwright(page, store_config, url)
+            # If site opened a popup window (common in meshekard), use the newest page
+            try:
+                context_pages = page.context.pages
+                content_page = context_pages[-1] if context_pages and context_pages[-1] is not None else page
+                if content_page != page:
+                    try:
+                        await content_page.bring_to_front()
+                    except Exception:
+                        pass
+            except Exception:
+                content_page = page
+
+            product_info = await self._extract_product_info_playwright(content_page, store_config, url)
             return product_info
         except PlaywrightTimeoutError:
             logger.warning(f"⏱️ Timeout loading page: {url}")

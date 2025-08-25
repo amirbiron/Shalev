@@ -879,7 +879,7 @@ class StockTrackerBot:
                     guessed = self.scraper.guess_product_name_from_url(tracking.product_url)
                     if guessed and not _is_invalid(guessed, tracking.store_name):
                         await self.db.collections['trackings'].update_one(
-                            {'._id': tracking._id} if hasattr(tracking, '_id') else {'product_url': tracking.product_url, 'user_id': tracking.user_id},
+                            {'_id': tracking._id} if hasattr(tracking, '_id') else {'product_url': tracking.product_url, 'user_id': tracking.user_id},
                             {'$set': {'product_name': guessed}}
                         )
                         tracking.product_name = guessed
