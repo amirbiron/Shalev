@@ -37,7 +37,16 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-DEPLOY_SHA = os.getenv('DEPLOY_SHA', '')
+DEPLOY_SHA = os.getenv('DEPLOY_SHA') or os.getenv('RENDER_GIT_COMMIT') or os.getenv('COMMIT_SHA') or ''
+if not DEPLOY_SHA:
+    # Try reading from common version files if available
+    for _p in ('/app/commit.txt', '/app/version.txt', 'VERSION', 'version.txt'):
+        try:
+            with open(_p, 'r') as _f:
+                DEPLOY_SHA = _f.read().strip()
+                break
+        except Exception:
+            continue
 if DEPLOY_SHA:
     logger.info(f"🧩 Deploy SHA: {DEPLOY_SHA}")
 
