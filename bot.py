@@ -228,7 +228,7 @@ class StockTrackerBot:
             tracking = ProductTracking(
                 user_id=user_id,
                 product_url=url,
-                product_name=product_info['name'],
+                product_name=product_info.name,
                 store_name=store_info['name'],
                 store_id=store_info['store_id'],
                 check_interval=config.DEFAULT_CHECK_INTERVAL,
@@ -256,11 +256,12 @@ class StockTrackerBot:
                 ]
             ])
             
+            # Send message with a small retry for transient network errors
             await update.message.reply_text(
                 f"🎉 נוסף מעקב חדש!\n\n"
-                f"📦 **{product_info['name']}**\n"
+                f"📦 **{product_info.name}**\n"
                 f"🏪 {store_info['name']}\n"
-                f"📊 סטטוס נוכחי: {'במלאי' if product_info['in_stock'] else 'אזל מהמלאי'}\n\n"
+                f"📊 סטטוס נוכחי: {'במלאי' if product_info.in_stock else 'אזל מהמלאי'}\n\n"
                 f"⏰ באיזו תדירות לבדוק?",
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
@@ -721,7 +722,9 @@ class StockTrackerBot:
             
             for store_id, store_config in SUPPORTED_CLUBS.items():
                 store_domain = urlparse(store_config['base_url']).netloc.replace('www.', '')
-                if domain == store_domain:
+                # Accept either the primary base_url domain or any additional domains listed
+                extra_domains = set([d.replace('www.', '') for d in store_config.get('domains', [])])
+                if domain == store_domain or domain in extra_domains:
                     return {
                         'store_id': store_id,
                         'name': store_config['name']

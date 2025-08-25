@@ -83,6 +83,7 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'living': {
         'name': 'Living',
         'base_url': 'https://www.living.co.il',
+        'domains': ['living.co.il', 'www.living.co.il', 'livingclub.co.il', 'www.livingclub.co.il'],
         'stock_selector': '.product-availability',
         'out_of_stock_indicators': ['אזל', 'לא זמין', 'זמנית לא זמין'],
         'requires_js': False
