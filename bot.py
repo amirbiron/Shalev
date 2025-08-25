@@ -325,8 +325,8 @@ class StockTrackerBot:
                     await update.message.reply_text(BOT_MESSAGES['error_occurred'])
                     return ConversationHandler.END
             
-            # Create frequency selection keyboard
-            keyboard = InlineKeyboardMarkup([
+            # Create frequency selection keyboard (add rename button only if name זוהה)
+            keyboard_rows = [
                 [
                     InlineKeyboardButton("⏱ כל 10 דקות", callback_data=f"freq_{tracking_id}_10"),
                     InlineKeyboardButton("🕐 כל שעה", callback_data=f"freq_{tracking_id}_60")
@@ -337,11 +337,11 @@ class StockTrackerBot:
                 ],
                 [
                     InlineKeyboardButton("✅ השתמש בברירת מחדל (שעה)", callback_data=f"freq_{tracking_id}_60")
-                ],
-                [
-                    InlineKeyboardButton("✍️ עדכן שם מוצר", callback_data=f"rename_{tracking_id}")
                 ]
-            ])
+            ]
+            if not invalid_product_name:
+                keyboard_rows.append([InlineKeyboardButton("✍️ עדכן שם מוצר", callback_data=f"rename_{tracking_id}")])
+            keyboard = InlineKeyboardMarkup(keyboard_rows)
             # Delete loading message
             try:
                 if loading_msg:
@@ -355,8 +355,7 @@ class StockTrackerBot:
                 f"📦 **{product_info.name}**\n"
                 f"🏪 {store_info['name']}\n"
                 f"📊 סטטוס נוכחי: {'במלאי' if product_info.in_stock else 'אזל מהמלאי'}\n\n"
-                f"⏰ באיזו תדירות לבדוק?\n\n"
-                f"רוצה לעדכן את שם המוצר לשם יותר מדויק? לחץ על ✍️ או שלח את השם כהודעה.",
+                f"⏰ באיזו תדירות לבדוק?",
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
             )
