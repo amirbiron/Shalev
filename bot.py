@@ -868,6 +868,24 @@ class StockTrackerBot:
                 logger.warning(f"⚠️ Unknown store: {tracking.store_id}")
                 return
             
+            # If product name looks invalid, try to refresh it once using URL guess
+            try:
+                def _is_invalid(name: str, store_name: str) -> bool:
+                    if not name:
+                        return True
+                    normalized = str(name).strip().strip('"\'')
+                    return normalized in {"לא זמין", store_name.strip()} or len(normalized) < 3
+                if _is_invalid(tracking.product_name, tracking.store_name):
+                    guessed = self.scraper.guess_product_name_from_url(tracking.product_url)
+                    if guessed and not _is_invalid(guessed, tracking.store_name):
+                        await self.db.collections['trackings'].update_one(
+                            {'._id': tracking._id} if hasattr(tracking, '_id') else {'product_url': tracking.product_url, 'user_id': tracking.user_id},
+                            {'$set': {'product_name': guessed}}
+                        )
+                        tracking.product_name = guessed
+            except Exception:
+                pass
+
             current_status = await self.scraper.check_stock_status(
                 tracking.product_url,
                 tracking.store_id
