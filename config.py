@@ -80,8 +80,9 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
             '.item-title',
             'h1'
         ],
-        'stock_selector': '.product-stock-status, .availability, .stock, .in-stock, .out-of-stock',
+        'stock_selector': '.product-stock-status, .availability, .stock, .in-stock, .out-of-stock, .benefit, .deal, .option, .variant',
         'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין', 'אזל', 'זמנית לא זמין'],
+        'in_stock_indicators': ['במלאי', 'זמין', 'יש במלאי', 'ניתן לרכישה'],
         'requires_js': True,
         'headers': {
             'User-Agent': 'Mozilla/5.0 (compatible; StockTracker/1.0)',
@@ -115,9 +116,17 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'behazdaa': {
         'name': 'בהצדעה',
         'base_url': 'https://www.behazdaa.co.il',
-        'stock_selector': '.availability',
-        'out_of_stock_indicators': ['אזל מהמלאי'],
-        'requires_js': True
+        'domains': [
+            'behatsdaa.org.il', 'www.behatsdaa.org.il',
+            'behatsdaa.co.il', 'www.behatsdaa.co.il',
+            'behazdaa.co.il', 'www.behazdaa.co.il',
+            'behazdaa.org.il', 'www.behazdaa.org.il'
+        ],
+        'stock_selector': '.availability, .product-options, .variations, .option, .variant, [data-option]',
+        'out_of_stock_indicators': ['אזל מהמלאי', 'אזל', 'לא זמין'],
+        'in_stock_indicators': ['במלאי', 'זמין', 'יש במלאי'],
+        'requires_js': True,
+        'strict_availability': True
     },
     'buff': {
         'name': 'Buff',

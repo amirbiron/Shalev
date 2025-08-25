@@ -35,7 +35,7 @@ from scrapers import StockScraper
 logger = logging.getLogger(__name__)
 
 # Conversation states
-WAITING_FOR_URL, SETTING_FREQUENCY = range(2)
+WAITING_FOR_URL, WAITING_FOR_OPTION, SETTING_FREQUENCY = range(3)
 
 class StockTrackerBot:
     """Main bot class handling all Telegram interactions"""
@@ -117,6 +117,9 @@ class StockTrackerBot:
                 WAITING_FOR_URL: [
                     MessageHandler(filters.Regex(r"^(?:🔙\s*)?חזרה$"), self.cancel_conversation),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_url_input)
+                ],
+                WAITING_FOR_OPTION: [
+                    CallbackQueryHandler(self.handle_option_selection, pattern=r"^opt_")
                 ],
                 SETTING_FREQUENCY: [
                     CallbackQueryHandler(self.handle_frequency_selection, pattern=r"^freq_")
@@ -309,21 +312,54 @@ class StockTrackerBot:
                 )
                 return ConversationHandler.END
             else:
-                # Create tracking object and insert
-                tracking = ProductTracking(
-                    user_id=user_id,
-                    product_url=url,
-                    product_key=product_key,
-                    product_name=product_info.name,
-                    store_name=store_info['name'],
-                    store_id=store_info['store_id'],
-                    check_interval=default_interval,
-                    status=TrackingStatus.ACTIVE
-                )
-                tracking_id = await self.db.add_tracking(tracking)
-                if not tracking_id:
-                    await update.message.reply_text(BOT_MESSAGES['error_occurred'])
-                    return ConversationHandler.END
+                # If multiple purchase options exist, ask user to select which one to track
+                try:
+                    options = await self.scraper.get_purchase_options(url, store_info['store_id'])
+                except Exception:
+                    options = []
+                if options:
+                    # Keep context for next step
+                    context.user_data['pending_track'] = {
+                        'url': url,
+                        'product_key': product_key,
+                        'product_name': product_info.name,
+                        'store_name': store_info['name'],
+                        'store_id': store_info['store_id'],
+                        'default_interval': default_interval
+                    }
+                    # Build options keyboard (top 8)
+                    buttons: List[List[InlineKeyboardButton]] = []
+                    for idx, opt in enumerate(options[:8]):
+                        label = opt.get('label') or opt.get('price') or f"אפשרות {idx+1}"
+                        key = opt.get('key') or re.sub(r"\s+", " ", label).strip().lower()
+                        buttons.append([InlineKeyboardButton(label, callback_data=f"opt_{idx}_{key}")])
+                    buttons.append([InlineKeyboardButton("דלג - עקוב אחרי כל האופציות", callback_data="opt_skip_all")])
+                    if loading_msg:
+                        try:
+                            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
+                        except Exception:
+                            pass
+                    await update.message.reply_text(
+                        "🛒 נמצא יותר מאפשרות רכישה. בחרו את האופציה הספציפית שתרצו לעקוב אחריה:",
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                    return WAITING_FOR_OPTION
+                else:
+                    # Create tracking object and insert
+                    tracking = ProductTracking(
+                        user_id=user_id,
+                        product_url=url,
+                        product_key=product_key,
+                        product_name=product_info.name,
+                        store_name=store_info['name'],
+                        store_id=store_info['store_id'],
+                        check_interval=default_interval,
+                        status=TrackingStatus.ACTIVE
+                    )
+                    tracking_id = await self.db.add_tracking(tracking)
+                    if not tracking_id:
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
             
             # Create frequency selection keyboard (add rename button only if name זוהה)
             keyboard_rows = [
@@ -430,6 +466,102 @@ class StockTrackerBot:
         except Exception as e:
             logger.error(f"❌ Error in frequency selection: {e}")
             return ConversationHandler.END
+
+    async def handle_option_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle user selecting a specific purchase option/deal to track"""
+        try:
+            query = update.callback_query
+            await query.answer()
+            data = query.data or ""
+            pending = context.user_data.get('pending_track') or {}
+            if not pending:
+                await query.edit_message_text("❌ פג תוקף הבחירה. נסו להוסיף את המעקב שוב.")
+                return ConversationHandler.END
+
+            user_id = update.effective_user.id
+            url = pending['url']
+            product_key = pending.get('product_key')
+            product_name = pending.get('product_name')
+            store_name = pending.get('store_name')
+            store_id = pending.get('store_id')
+            default_interval = pending.get('default_interval', config.DEFAULT_CHECK_INTERVAL)
+
+            option_label: Optional[str] = None
+            option_key: Optional[str] = None
+
+            if data == 'opt_skip_all':
+                pass
+            else:
+                try:
+                    parts = data.split('_', 2)
+                    if len(parts) >= 3:
+                        option_key = parts[2]
+                except Exception:
+                    option_key = None
+                try:
+                    options = await self.scraper.get_purchase_options(url, store_id)
+                except Exception:
+                    options = []
+                for opt in options:
+                    label = opt.get('label') or opt.get('price')
+                    key = opt.get('key') or (re.sub(r"\s+", " ", (label or '')).strip().lower())
+                    if option_key and key == option_key:
+                        option_label = label
+                        break
+
+            tracking = ProductTracking(
+                user_id=user_id,
+                product_url=url,
+                original_url=url,
+                product_key=product_key,
+                product_name=product_name,
+                store_name=store_name,
+                store_id=store_id,
+                option_label=option_label,
+                option_key=option_key,
+                check_interval=default_interval,
+                status=TrackingStatus.ACTIVE
+            )
+            tracking_id = await self.db.add_tracking(tracking)
+            if not tracking_id:
+                await query.edit_message_text(BOT_MESSAGES['error_occurred'])
+                return ConversationHandler.END
+
+            keyboard_rows = [
+                [
+                    InlineKeyboardButton("⏱ כל 10 דקות", callback_data=f"freq_{tracking_id}_10"),
+                    InlineKeyboardButton("🕐 כל שעה", callback_data=f"freq_{tracking_id}_60")
+                ],
+                [
+                    InlineKeyboardButton("🕒 כל 3 שעות", callback_data=f"freq_{tracking_id}_180"),
+                    InlineKeyboardButton("🕕 כל 6 שעות", callback_data=f"freq_{tracking_id}_360")
+                ],
+                [
+                    InlineKeyboardButton("✅ השתמש בברירת מחדל (שעה)", callback_data=f"freq_{tracking_id}_60")
+                ]
+            ]
+            keyboard = InlineKeyboardMarkup(keyboard_rows)
+
+            suffix = f"\n🎯 אופציה: {option_label}" if option_label else ""
+            await query.edit_message_text(
+                f"🎉 נוסף מעקב חדש!{suffix}\n\n"
+                f"📦 **{product_name}**\n"
+                f"🏪 {store_name}\n"
+                f"⏰ באיזו תדירות לבדוק?",
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+            context.user_data.pop('pending_track', None)
+            return SETTING_FREQUENCY
+
+        except Exception as e:
+            logger.error(f"❌ Error handling option selection: {e}")
+            try:
+                await update.effective_message.reply_text(BOT_MESSAGES['error_occurred'])
+            except Exception:
+                pass
+            return ConversationHandler.END
     
     async def my_stocks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show user's tracked stocks"""
@@ -459,13 +591,15 @@ class StockTrackerBot:
                         else:
                             last_check = f" (נבדק לפני {int(time_diff.total_seconds() / 3600)} שעות)"
                     
-                    message += f"{i}. {status_emoji} **{tracking.product_name[:30]}{'...' if len(tracking.product_name) > 30 else ''}**\n"
+                    opt = f" | 🎯 {tracking.option_label}" if getattr(tracking, 'option_label', None) else ""
+                    message += f"{i}. {status_emoji} **{tracking.product_name[:30]}{'...' if len(tracking.product_name) > 30 else ''}**{opt}\n"
                     message += f"   🏪 {tracking.store_name} | ⏰ {self._get_frequency_text(tracking.check_interval)}{last_check}\n\n"
             
             if paused_trackings:
                 message += "\n⏸ **מושהים:**\n"
                 for tracking in paused_trackings[:5]:
-                    message += f"• **{tracking.product_name[:30]}{'...' if len(tracking.product_name) > 30 else ''}**\n"
+                    opt = f" | 🎯 {tracking.option_label}" if getattr(tracking, 'option_label', None) else ""
+                    message += f"• **{tracking.product_name[:30]}{'...' if len(tracking.product_name) > 30 else ''}**{opt}\n"
                     message += f"  🏪 {tracking.store_name}\n"
             
             # Create inline keyboard for management

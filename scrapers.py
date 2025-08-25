@@ -197,6 +197,92 @@ class StockScraper:
         except Exception as e:
             logger.error(f"❌ Error checking stock status for {url}: {e}")
             return None
+
+    async def get_purchase_options(self, url: str, store_id: str) -> List[Dict[str, str]]:
+        """Extract a list of purchasable options/variants/deals on the product page.
+        Returns a list of dicts with at least 'label' and 'key' fields.
+        Best-effort across stores; safe no-op if not found.
+        """
+        options: List[Dict[str, str]] = []
+        try:
+            store_config = self.store_configs.get(store_id) or {}
+            requires_js = store_config.get('requires_js', False)
+            if requires_js and not self.browser:
+                await self.init_browser()
+            if not requires_js and not self.session:
+                await self.init_session()
+
+            # Heuristics for common option blocks
+            selectors = [
+                'select[name*="variant"], select[name*="option"], select[name*="deal"]',
+                '.variants select, .options select',
+                '.variant, .option, [data-variant], [data-option]'
+            ]
+
+            if requires_js:
+                page = await self.browser.new_page()
+                try:
+                    await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                    await asyncio.sleep(1)
+                    # Try selects first
+                    for sel in selectors[:2]:
+                        nodes = await page.query_selector_all(sel)
+                        for node in nodes:
+                            try:
+                                tag = (await node.evaluate('(el) => el.tagName')).lower()
+                            except Exception:
+                                tag = ''
+                            if tag == 'select':
+                                opts = await node.query_selector_all('option')
+                                for op in opts:
+                                    txt = (await op.inner_text() or '').strip()
+                                    if txt:
+                                        key = re.sub(r"\s+", " ", txt).strip().lower()
+                                        options.append({'label': txt, 'key': key})
+                    # Generic labeled option items
+                    if not options:
+                        nodes = await page.query_selector_all(selectors[2])
+                        for node in nodes[:20]:
+                            txt = (await node.inner_text() or '').strip()
+                            if txt and any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה']):
+                                key = re.sub(r"\s+", " ", txt).strip().lower()
+                                options.append({'label': txt, 'key': key})
+                finally:
+                    await page.close()
+            else:
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return []
+                    html = await resp.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                # Select based
+                for sel in selectors[:2]:
+                    for select in soup.select(sel):
+                        for op in select.select('option'):
+                            txt = op.get_text(strip=True)
+                            if txt:
+                                key = re.sub(r"\s+", " ", txt).strip().lower()
+                                options.append({'label': txt, 'key': key})
+                if not options:
+                    for node in soup.select(selectors[2])[:20]:
+                        txt = node.get_text(strip=True)
+                        if txt and (any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה'])):
+                            key = re.sub(r"\s+", " ", txt).strip().lower()
+                            options.append({'label': txt, 'key': key})
+        except Exception:
+            return options
+        # Deduplicate by key
+        seen = set()
+        unique: List[Dict[str, str]] = []
+        for opt in options:
+            k = opt.get('key') or opt.get('label')
+            if not k:
+                continue
+            if k in seen:
+                continue
+            seen.add(k)
+            unique.append(opt)
+        return unique
     
     async def _scrape_with_playwright(self, url: str, store_config: Dict[str, Any]) -> ProductInfo:
         if not self.browser:
@@ -489,39 +575,76 @@ class StockScraper:
             # Stock status
             stock_selector = store_config.get('stock_selector', '.stock-status')
             out_of_stock_indicators = store_config.get('out_of_stock_indicators', ['אזל', 'לא זמין'])
+            in_stock_indicators = store_config.get('in_stock_indicators', [])
+            strict_availability = store_config.get('strict_availability', False)
             stock_text = ""
-            in_stock = True
+            in_stock: Optional[bool] = None
             try:
+                # Prefer availability elements; optionally wait a bit on strict stores
+                try:
+                    if strict_availability:
+                        await page.wait_for_selector(stock_selector, timeout=2500)
+                except Exception:
+                    pass
+
+                # Search in main page
                 stock_elements = await page.query_selector_all(stock_selector)
+                # Also search in frames (some sites render availability within iframes)
+                try:
+                    for frame in page.frames:
+                        try:
+                            frame_elements = await frame.query_selector_all(stock_selector)
+                        except Exception:
+                            frame_elements = []
+                        stock_elements.extend(frame_elements or [])
+                except Exception:
+                    pass
+
+                combined_text = []
                 if stock_elements:
                     for el in stock_elements:
-                        text = (await el.inner_text()).strip()
+                        try:
+                            text = (await el.inner_text())
+                        except Exception:
+                            text = None
+                        text = (text or '').strip()
                         if text:
-                            stock_text = text
-                            break
+                            combined_text.append(text)
+                    stock_text = ' | '.join(combined_text)
+                # Decide based on explicit availability areas first
+                text_lower = stock_text.lower()
                 if stock_text:
-                    for indicator in out_of_stock_indicators:
-                        if indicator in stock_text:
-                            in_stock = False
-                            break
+                    if any(isinstance(ind, str) and ind.lower() in text_lower for ind in in_stock_indicators):
+                        in_stock = True
+                    elif any(isinstance(ind, str) and ind.lower() in text_lower for ind in out_of_stock_indicators):
+                        in_stock = False
+                    else:
+                        in_stock = None if strict_availability else True
                 else:
-                    page_content = await page.content()
-                    for indicator in out_of_stock_indicators:
-                        if indicator in page_content:
+                    if strict_availability:
+                        in_stock = None
+                    else:
+                        # Fallback to page content (non-strict only)
+                        page_content = await page.content()
+                        content_lower = page_content.lower()
+                        if any(ind.lower() in content_lower for ind in out_of_stock_indicators if isinstance(ind, str)):
                             in_stock = False
-                            stock_text = indicator
-                            break
-                    if not stock_text:
-                        stock_text = "במלאי" if in_stock else "לא זמין"
+                            stock_text = next((ind for ind in out_of_stock_indicators if isinstance(ind, str) and ind.lower() in content_lower), "לא זמין")
+                        elif any(ind.lower() in content_lower for ind in in_stock_indicators if isinstance(ind, str)):
+                            in_stock = True
+                            stock_text = next((ind for ind in in_stock_indicators if isinstance(ind, str) and ind.lower() in content_lower), "במלאי")
+                        else:
+                            in_stock = True
+                            stock_text = "במלאי"
             except Exception as e:
                 logger.warning(f"⚠️ Could not extract stock status: {e}")
                 stock_text = "לא ניתן לקבוע"
-                in_stock = True
+                in_stock = None if strict_availability else True
 
             return ProductInfo(
                 name=product_name,
                 price=price,
-                in_stock=in_stock,
+                in_stock=(True if in_stock is None else in_stock),
                 stock_text=stock_text,
                 last_checked=str(asyncio.get_event_loop().time())
             )
@@ -662,21 +785,52 @@ class StockScraper:
             await page.goto(url, wait_until='domcontentloaded', timeout=15000)
             stock_selector = store_config.get('stock_selector', '.stock-status')
             out_of_stock_indicators = store_config.get('out_of_stock_indicators', ['אזל', 'לא זמין'])
+            in_stock_indicators = store_config.get('in_stock_indicators', [])
+            strict_availability = store_config.get('strict_availability', False)
             await asyncio.sleep(1)
             try:
-                stock_elements = await page.query_selector_all(stock_selector)
-                if stock_elements:
-                    for element in stock_elements:
-                        text = (await element.inner_text()).strip().lower()
-                        for indicator in out_of_stock_indicators:
-                            if indicator.lower() in text:
-                                return False
-                    return True
+                # On strict stores, give the availability widget a brief moment to render
+                if strict_availability:
+                    try:
+                        await page.wait_for_selector(stock_selector, timeout=2500)
+                    except Exception:
+                        pass
+
+                elements = await page.query_selector_all(stock_selector)
+                # Also scan frames (Shufersal and others might render within an iframe)
+                try:
+                    for frame in page.frames:
+                        try:
+                            elements.extend(await frame.query_selector_all(stock_selector) or [])
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                if elements:
+                    texts: List[str] = []
+                    for element in elements:
+                        try:
+                            t = await element.inner_text()
+                        except Exception:
+                            t = None
+                        t = (t or '').strip()
+                        if t:
+                            texts.append(t)
+                    joined_lower = ' | '.join(texts).lower()
+                    if any(isinstance(ind, str) and ind.lower() in joined_lower for ind in in_stock_indicators):
+                        return True
+                    if any(isinstance(ind, str) and ind.lower() in joined_lower for ind in out_of_stock_indicators):
+                        return False
+                    return None if strict_availability else True
                 else:
-                    content = await page.content()
-                    for indicator in out_of_stock_indicators:
-                        if indicator in content:
-                            return False
+                    if strict_availability:
+                        return None
+                    content = (await page.content()).lower()
+                    if any(ind.lower() in content for ind in out_of_stock_indicators if isinstance(ind, str)):
+                        return False
+                    if any(ind.lower() in content for ind in in_stock_indicators if isinstance(ind, str)):
+                        return True
                     return True
             except Exception:
                 return None

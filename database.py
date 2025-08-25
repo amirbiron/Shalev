@@ -37,6 +37,12 @@ class ProductTracking:
     store_id: str
     check_interval: int  # minutes
     status: TrackingStatus
+    # Optional: canonical URL without option augmentation (for display/back-compat)
+    original_url: Optional[str] = None
+    # Optional selected option/deal to track (e.g., "20%", "דיל 85₪")
+    option_label: Optional[str] = None
+    # Normalized key for the selected option (used for dedup/uniqueness)
+    option_key: Optional[str] = None
     last_checked: Optional[datetime] = None
     last_status_change: Optional[datetime] = None
     created_at: Optional[datetime] = None
@@ -144,12 +150,13 @@ class DatabaseManager:
             # Trackings collection indexes
             # Unique on (user_id, product_url) remains, but we will also de-duplicate in app by product_key
             await self.collections['trackings'].create_index([
-                ('user_id', 1), ('product_url', 1)
+                ('user_id', 1), ('product_url', 1), ('option_key', 1)
             ], unique=True)
             await self.collections['trackings'].create_index('status')
             await self.collections['trackings'].create_index('last_checked')
             await self.collections['trackings'].create_index('store_id')
             await self.collections['trackings'].create_index('product_key')
+            await self.collections['trackings'].create_index('option_label')
             await self.collections['trackings'].create_index([
                 ('status', 1), ('last_checked', 1)
             ])
