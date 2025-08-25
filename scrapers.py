@@ -27,6 +27,7 @@ class ProductInfo:
     stock_text: str
     last_checked: str
     error_message: Optional[str] = None
+    offers: Optional[List[Dict[str, Any]]] = None  # [{'id': str, 'name': str, 'price': str, 'in_stock': bool}]
 
 class StockScraper:
     """Main scraper class supporting multiple scraping strategies"""
@@ -473,7 +474,7 @@ class StockScraper:
                     except Exception:
                         pass
 
-            # Price (best-effort)
+            # Price (best-effort) and offers collection (best-effort)
             price = None
             for sel in ['.price', '.product-price', '[data-testid="price"]', '.current-price', '.final-price']:
                 try:
@@ -485,6 +486,40 @@ class StockScraper:
                             break
                 except Exception:
                     continue
+
+            # Offers (variants) best-effort extraction
+            offers: List[Dict[str, Any]] = []
+            try:
+                variant_containers = await page.query_selector_all('[data-offer], .offer, .variant, [data-testid="offer"]')
+                for vc in variant_containers[:12]:
+                    try:
+                        oid = await vc.get_attribute('data-offer') or await vc.get_attribute('id')
+                    except Exception:
+                        oid = None
+                    try:
+                        oname_el = await vc.query_selector('.offer-name, .variant-name, [data-testid="offer-name"], .title, .label')
+                        oname = (await oname_el.inner_text()).strip() if oname_el else None
+                    except Exception:
+                        oname = None
+                    try:
+                        oprice_el = await vc.query_selector('.price, .offer-price, [data-testid="offer-price"]')
+                        oprice = (await oprice_el.inner_text()).strip() if oprice_el else None
+                    except Exception:
+                        oprice = None
+                    try:
+                        oavail_el = await vc.query_selector('.in-stock, .out-of-stock, .availability, [data-testid="availability"]')
+                        oavail_txt = (await oavail_el.inner_text()).strip() if oavail_el else ''
+                    except Exception:
+                        oavail_txt = ''
+                    o_in_stock = True
+                    if oavail_txt:
+                        if any(ind in oavail_txt for ind in store_config.get('out_of_stock_indicators', ['אזל', 'לא זמין'])):
+                            o_in_stock = False
+                        elif any(pos in oavail_txt for pos in store_config.get('in_stock_indicators', ['במלאי', 'זמין'])):
+                            o_in_stock = True
+                    offers.append({'id': oid or oname or (oprice or '')[:32], 'name': oname or (oprice or 'הצעה'), 'price': oprice, 'in_stock': o_in_stock})
+            except Exception:
+                offers = []
 
             # Stock status (prefer positive indicators if provided)
             stock_selector = store_config.get('stock_selector', '.stock-status')
@@ -536,7 +571,8 @@ class StockScraper:
                 price=price,
                 in_stock=in_stock,
                 stock_text=stock_text,
-                last_checked=str(asyncio.get_event_loop().time())
+                last_checked=str(asyncio.get_event_loop().time()),
+                offers=offers or None
             )
         except Exception as e:
             logger.error(f"❌ Error extracting product info with Playwright: {e}")
