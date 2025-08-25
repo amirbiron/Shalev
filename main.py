@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 # FastAPI for health check (Render requirement)
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -135,19 +135,26 @@ async def lifespan(app: FastAPI):
             await bot_instance.stop_scheduler()
         
         if telegram_app:
-            # Stop polling task first if running
-            try:
-                if telegram_app.updater and telegram_app.updater.running:
-                    await telegram_app.updater.stop()
-            except Exception as e:
-                logger.warning(f"Error stopping updater: {e}")
-            # Await polling task completion
-            try:
-                if polling_task:
+            # If ran in polling mode, stop updater and await polling task
+            if polling_task:
+                try:
+                    if telegram_app.updater and telegram_app.updater.running:
+                        await telegram_app.updater.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping updater: {e}")
+                # Await polling task completion
+                try:
                     await polling_task
+                except Exception as e:
+                    logger.warning(f"Error awaiting polling task: {e}")
+                finally:
                     polling_task = None
-            except Exception as e:
-                logger.warning(f"Error awaiting polling task: {e}")
+            else:
+                # Webhook mode: remove webhook before shutdown to avoid getUpdates conflict
+                try:
+                    await telegram_app.bot.delete_webhook(drop_pending_updates=False)
+                except Exception as e:
+                    logger.warning(f"Error deleting webhook during shutdown: {e}")
             # Then stop & shutdown application
             await telegram_app.stop()
             await telegram_app.shutdown()
@@ -220,7 +227,7 @@ async def health_check():
         )
 
 @app.post("/telegram-webhook")
-async def telegram_webhook(request):
+async def telegram_webhook(request: Request):
     """Handle Telegram webhook (production only)"""
     if not telegram_app:
         raise HTTPException(status_code=503, detail="Bot not initialized")
