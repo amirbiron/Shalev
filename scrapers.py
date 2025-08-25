@@ -296,20 +296,52 @@ class StockScraper:
             if 'headers' in store_config:
                 headers.update(store_config['headers'])
             
+            # Ensure a realistic Referer for sites that require it
+            parsed = urlparse(url)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            headers.setdefault('Referer', origin)
+            
             # Make request
-            async with self.session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    logger.warning(f"⚠️ HTTP {response.status} for {url}")
-                    return ProductInfo(
-                        name=f"שגיאת HTTP {response.status}",
-                        price=None,
-                        in_stock=False,
-                        stock_text=f"HTTP {response.status}",
-                        last_checked="",
-                        error_message=f"HTTP {response.status}"
-                    )
-                
-                html = await response.text()
+            try:
+                async with self.session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        logger.warning(f"⚠️ HTTP {response.status} for {url}")
+                        # Try preflight + retry once
+                        async with self.session.get(origin, headers=headers) as _:
+                            pass
+                        async with self.session.get(url, headers=headers) as retry_resp:
+                            if retry_resp.status != 200:
+                                return ProductInfo(
+                                    name=f"שגיאת HTTP {retry_resp.status}",
+                                    price=None,
+                                    in_stock=False,
+                                    stock_text=f"HTTP {retry_resp.status}",
+                                    last_checked="",
+                                    error_message=f"HTTP {retry_resp.status}"
+                                )
+                            html = await retry_resp.text()
+                    else:
+                        html = await response.text()
+            except Exception as e:
+                # Preflight then retry once on network-level errors
+                logger.warning(f"🌐 HTTP error for {url}: {e}. Retrying after preflight...")
+                try:
+                    async with self.session.get(origin, headers=headers) as _:
+                        pass
+                    async with self.session.get(url, headers=headers) as retry_resp:
+                        if retry_resp.status != 200:
+                            return ProductInfo(
+                                name=f"שגיאת HTTP {retry_resp.status}",
+                                price=None,
+                                in_stock=False,
+                                stock_text=f"HTTP {retry_resp.status}",
+                                last_checked="",
+                                error_message=f"HTTP {retry_resp.status}"
+                            )
+                        html = await retry_resp.text()
+                except Exception as e2:
+                    logger.error(f"❌ HTTP scraping error after retry: {e2}")
+                    raise
                 
             # Parse with BeautifulSoup
             soup = BeautifulSoup(html, 'html.parser')
