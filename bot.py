@@ -336,6 +336,9 @@ class StockTrackerBot:
                 ],
                 [
                     InlineKeyboardButton("✅ השתמש בברירת מחדל (שעה)", callback_data=f"freq_{tracking_id}_60")
+                ],
+                [
+                    InlineKeyboardButton("✍️ עדכן שם מוצר", callback_data=f"rename_{tracking_id}")
                 ]
             ])
             # Delete loading message
@@ -351,7 +354,8 @@ class StockTrackerBot:
                 f"📦 **{product_info.name}**\n"
                 f"🏪 {store_info['name']}\n"
                 f"📊 סטטוס נוכחי: {'במלאי' if product_info.in_stock else 'אזל מהמלאי'}\n\n"
-                f"⏰ באיזו תדירות לבדוק?",
+                f"⏰ באיזו תדירות לבדוק?\n\n"
+                f"רוצה לעדכן את שם המוצר לשם יותר מדויק? לחץ על ✍️ או שלח את השם כהודעה.",
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
             )
