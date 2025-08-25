@@ -4,6 +4,7 @@ Optimized for Render deployment with 2025 best practices
 """
 
 import asyncio
+import os
 import logging
 import sys
 import signal
