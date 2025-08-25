@@ -40,5 +40,4 @@ fastapi==0.112.0
 # Optional: Enhanced async performance (skip on Python 3.13+ to avoid source build)
 uvloop==0.19.0; platform_system != "Windows" and python_version < "3.13"
 
-# Greenlet wheels compatibility with newer Python (Python 3.13 requires >=3.1.0)
-greenlet>=3.1.0
+# Greenlet is resolved via transitive deps (e.g., Playwright pins to 3.0.3). Avoid pinning here to prevent conflicts.
