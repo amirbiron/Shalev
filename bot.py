@@ -138,6 +138,7 @@ class StockTrackerBot:
         application.add_handler(CallbackQueryHandler(self.handle_remove_tracking, pattern=r"^remove_"))
         application.add_handler(CallbackQueryHandler(self.handle_pause_tracking, pattern=r"^pause_"))
         application.add_handler(CallbackQueryHandler(self.handle_resume_tracking, pattern=r"^resume_"))
+        application.add_handler(CallbackQueryHandler(self.handle_rename_tracking, pattern=r"^rename_"))
         application.add_handler(CallbackQueryHandler(self.handle_settings, pattern=r"^settings_"))
         
         # Generic message handler (for URLs)
@@ -217,19 +218,37 @@ class StockTrackerBot:
                 await update.message.reply_text(BOT_MESSAGES['invalid_url'])
                 return WAITING_FOR_URL
             
-            # Get product info from scraper
-            logger.info(f"URL received: {url} | store={store_info['store_id']}")
+            # Show loading indicator and get product info from scraper
+            try:
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            except Exception:
+                pass
+            loading_msg = None
+            try:
+                loading_msg = await update.message.reply_text("⏳ טוען...")
+            except Exception:
+                loading_msg = None
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
             if (
                 not product_info or
                 getattr(product_info, 'error_message', None) or
                 product_info.name in {"שגיאה בטעינת המוצר", "שגיאת זמן קצוב", "שגיאה"}
             ):
-                logger.warning(f"Product info load failure for {url} | store={store_info['store_id']} | error={getattr(product_info, 'error_message', None)}")
                 await update.message.reply_text(
                     "❌ לא הצלחתי לטעון את פרטי המוצר. נסו שוב מאוחר יותר או שלחו קישור מוצר ישיר."
                 )
                 return WAITING_FOR_URL
+
+            # Detect invalid/placeholder product name to trigger manual rename prompt later
+            try:
+                normalized_name = (product_info.name or '').strip().strip('"\'')
+                invalid_product_name = (
+                    not normalized_name or
+                    len(normalized_name) < 3 or
+                    normalized_name in {store_info['name'].strip(), 'משקארד', 'לא זמין'}
+                )
+            except Exception:
+                invalid_product_name = False
             
             # Determine default check interval (user-specific if available)
             user_doc = await self.db.collections['users'].find_one({'user_id': user_id})
@@ -250,7 +269,6 @@ class StockTrackerBot:
             if product_key:
                 or_conditions.append({'product_key': product_key, 'store_id': store_info['store_id']})
             existing = await self.db.collections['trackings'].find_one({'user_id': user_id, '$or': or_conditions})
-            logger.info(f"Dedup check for user={user_id} url={url} key={product_key} -> existing={bool(existing)}")
 
             if existing and existing.get('status') == 'error':
                 # Revive ERROR tracking
@@ -302,92 +320,13 @@ class StockTrackerBot:
                     check_interval=default_interval,
                     status=TrackingStatus.ACTIVE
                 )
-                try:
-                    tracking_id = await self.db.add_tracking(tracking)
-                except Exception as e:
-                    logger.error(f"DB add_tracking failed for user={user_id} url={url}: {e}")
+                tracking_id = await self.db.add_tracking(tracking)
+                if not tracking_id:
                     await update.message.reply_text(BOT_MESSAGES['error_occurred'])
                     return ConversationHandler.END
-                if not tracking_id:
-                    # Re-check for existing tracking (race/duplicate), revive if ERROR else show management
-                    logger.info(f"add_tracking returned None; re-checking existing for user={user_id} url={url} key={product_key}")
-                    query = {
-                        'user_id': user_id,
-                        '$or': [
-                            {'product_url': url}
-                        ]
-                    }
-                    if product_key:
-                        query['$or'].append({'product_key': product_key, 'store_id': store_info['store_id']})
-                    existing2 = await self.db.collections['trackings'].find_one(query)
-                    if existing2:
-                        existing_id = existing2.get('_id')
-                        existing_status = existing2.get('status', 'active')
-                        if existing_status == 'error':
-                            from datetime import datetime
-                            await self.db.collections['trackings'].update_one(
-                                {'_id': existing_id},
-                                {'$set': {
-                                    'status': 'active',
-                                    'error_count': 0,
-                                    'updated_at': datetime.utcnow(),
-                                    'product_name': product_info.name,
-                                    'notification_sent': False
-                                }}
-                            )
-                            tracking_id = existing_id  # proceed to frequency selection
-                        else:
-                            existing_id_str = str(existing_id)
-                            status_map = {
-                                'active': 'פעיל',
-                                'paused': 'מושהה',
-                                'in_stock': 'במלאי',
-                                'out_of_stock': 'אזל',
-                                'error': 'שגיאה'
-                            }
-                            keyboard_buttons = []
-                            if existing_status == 'paused':
-                                keyboard_buttons.append([InlineKeyboardButton("▶️ חידוש מעקב", callback_data=f"resume_{existing_id_str}")])
-                            else:
-                                keyboard_buttons.append([InlineKeyboardButton("⏸ השהה מעקב", callback_data=f"pause_{existing_id_str}")])
-                            keyboard_buttons.append([InlineKeyboardButton("🗑 הסר מעקב", callback_data=f"remove_{existing_id_str}")])
-
-                            await update.message.reply_text(
-                                f"✅ כבר קיים מעקב למוצר הזה.\n\n"
-                                f"📦 {existing2.get('product_name', 'מוצר')}\n"
-                                f"🏪 {existing2.get('store_name', store_info['name'])}\n"
-                                f"📊 סטטוס: {status_map.get(existing_status, existing_status)}",
-                                reply_markup=InlineKeyboardMarkup(keyboard_buttons)
-                            )
-                            return ConversationHandler.END
-                    else:
-                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
-                        return ConversationHandler.END
-                else:
-                    # Final fallback: force upsert and proceed
-                    from datetime import datetime
-                    doc = tracking.to_dict()
-                    doc['created_at'] = datetime.utcnow()
-                    doc['updated_at'] = doc['created_at']
-                    filter_q = {'user_id': user_id, 'product_url': url}
-                    try:
-                        res = await self.db.collections['trackings'].update_one(filter_q, {'$setOnInsert': doc}, upsert=True)
-                        if res.upserted_id is not None:
-                            tracking_id = res.upserted_id
-                        else:
-                            exist3 = await self.db.collections['trackings'].find_one(filter_q)
-                            if exist3:
-                                tracking_id = exist3.get('_id')
-                    except Exception as e:
-                        logger.error(f"DB upsert fallback failed for user={user_id} url={url}: {e}")
-                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
-                        return ConversationHandler.END
-                    if not tracking_id:
-                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
-                        return ConversationHandler.END
             
-            # Create frequency selection keyboard
-            keyboard = InlineKeyboardMarkup([
+            # Create frequency selection keyboard (add rename button only if name זוהה)
+            keyboard_rows = [
                 [
                     InlineKeyboardButton("⏱ כל 10 דקות", callback_data=f"freq_{tracking_id}_10"),
                     InlineKeyboardButton("🕐 כל שעה", callback_data=f"freq_{tracking_id}_60")
@@ -399,8 +338,17 @@ class StockTrackerBot:
                 [
                     InlineKeyboardButton("✅ השתמש בברירת מחדל (שעה)", callback_data=f"freq_{tracking_id}_60")
                 ]
-            ])
-            
+            ]
+            if not invalid_product_name:
+                keyboard_rows.append([InlineKeyboardButton("✍️ עדכן שם מוצר", callback_data=f"rename_{tracking_id}")])
+            keyboard = InlineKeyboardMarkup(keyboard_rows)
+            # Delete loading message
+            try:
+                if loading_msg:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
+            except Exception:
+                pass
+
             # Send message with a small retry for transient network errors
             await update.message.reply_text(
                 f"🎉 נוסף מעקב חדש!\n\n"
@@ -411,6 +359,14 @@ class StockTrackerBot:
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
             )
+
+            # If name looks invalid, prompt user for a manual name and store the pending tracking id
+            if invalid_product_name:
+                try:
+                    context.user_data['awaiting_rename_id'] = str(tracking_id)
+                    await update.message.reply_text("✍️ שם המוצר לא זוהה. שלחו עכשיו את השם המדויק, ואני אעדכן אותו במעקב.")
+                except Exception:
+                    pass
             
             return SETTING_FREQUENCY
             
@@ -745,13 +701,39 @@ class StockTrackerBot:
             if text.startswith(('http://', 'https://')):
                 return await self.handle_url_input(update, context)
             else:
-                # Guide user to use buttons
-                await update.message.reply_text(
-                    "🤖 השתמשו בכפתורים למטה או שלחו קישור למוצר שתרצו לעקוב אחריו."
-                )
+                # If awaiting manual rename, update the last tracking name
+                pending_id = context.user_data.get('awaiting_rename_id')
+                if pending_id:
+                    from bson import ObjectId
+                    new_name = text[:120].strip()
+                    if new_name:
+                        await self.db.collections['trackings'].update_one(
+                            {'_id': ObjectId(pending_id)},
+                            {'$set': {'product_name': new_name}}
+                        )
+                        context.user_data.pop('awaiting_rename_id', None)
+                        await update.message.reply_text(f"✅ השם עודכן ל: {new_name}")
+                        return
+                # Otherwise guide user
+                await update.message.reply_text("🤖 שלחו קישור למוצר כדי להתחיל לעקוב, או השתמשו בכפתורים למטה.")
                 
         except Exception as e:
             logger.error(f"❌ Error in generic message handler: {e}")
+
+    async def handle_rename_tracking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Initiate manual rename flow via button"""
+        try:
+            query = update.callback_query
+            await query.answer()
+            parts = query.data.split('_')
+            if len(parts) != 2:
+                return
+            tracking_id = parts[1]
+            context.user_data['awaiting_rename_id'] = tracking_id
+            await query.edit_message_text(
+                "✍️ שלחו עכשיו את השם המדויק למוצר, ואני אעדכן אותו במעקב.")
+        except Exception as e:
+            logger.error(f"❌ Error in handle_rename_tracking: {e}")
     
     async def cancel_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel current conversation"""
