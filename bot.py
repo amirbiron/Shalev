@@ -115,6 +115,7 @@ class StockTrackerBot:
             ],
             states={
                 WAITING_FOR_URL: [
+                    MessageHandler(filters.Regex(r"^(?:🔙\s*)?חזרה$"), self.cancel_conversation),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_url_input)
                 ],
                 SETTING_FREQUENCY: [
@@ -123,7 +124,7 @@ class StockTrackerBot:
             },
             fallbacks=[
                 CommandHandler("cancel", self.cancel_conversation),
-                MessageHandler(filters.Regex(r"^🔙 חזרה"), self.cancel_conversation)
+                MessageHandler(filters.Regex(r"^(?:🔙\s*)?חזרה$"), self.cancel_conversation)
             ]
         )
         application.add_handler(conv_handler)
@@ -224,6 +225,14 @@ class StockTrackerBot:
                 )
                 return WAITING_FOR_URL
             
+            # Determine default check interval (user-specific if available)
+            user_doc = await self.db.collections['users'].find_one({'user_id': user_id})
+            default_interval = config.DEFAULT_CHECK_INTERVAL
+            if user_doc:
+                default_interval = int(user_doc.get('default_check_interval', default_interval))
+                # Clamp to configured min/max
+                default_interval = max(config.MIN_CHECK_INTERVAL, min(config.MAX_CHECK_INTERVAL, default_interval))
+
             # Create tracking object
             tracking = ProductTracking(
                 user_id=user_id,
@@ -231,7 +240,7 @@ class StockTrackerBot:
                 product_name=product_info.name,
                 store_name=store_info['name'],
                 store_id=store_info['store_id'],
-                check_interval=config.DEFAULT_CHECK_INTERVAL,
+                check_interval=default_interval,
                 status=TrackingStatus.ACTIVE
             )
             
@@ -480,8 +489,22 @@ class StockTrackerBot:
             query = update.callback_query
             await query.answer()
             
-            setting = query.data.split('_')[1]
+            parts = query.data.split('_')
+            setting = parts[1] if len(parts) > 1 else ''
             
+            # Helper: show main settings menu
+            async def show_main_settings_menu():
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔔 הגדרות התראות", callback_data="settings_notifications")],
+                    [InlineKeyboardButton("⏰ תדירות בדיקה כללית", callback_data="settings_frequency")],
+                    [InlineKeyboardButton("📊 סטטיסטיקות", callback_data="settings_stats")]
+                ])
+                await query.edit_message_text(
+                    "⚙️ **הגדרות הבוט**\n\nבחרו את ההגדרה שתרצו לשנות:",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+
             if setting == "stats":
                 stats = await self.db.get_bot_stats()
                 message = f"""📊 **סטטיסטיקות הבוט**
@@ -497,6 +520,82 @@ class StockTrackerBot:
                     message += f"\n• {store['_id']}: {store['count']} מעקבים"
                 
                 await query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
+            elif setting == "back":
+                await show_main_settings_menu()
+            elif setting == "notifications":
+                # Toggle notifications submenu or apply toggle
+                # patterns: settings_notifications, settings_notifications_on, settings_notifications_off
+                action = parts[2] if len(parts) > 2 else None
+                user_doc = await self.db.collections['users'].find_one({'user_id': update.effective_user.id})
+                current_enabled = True if not user_doc else user_doc.get('notifications_enabled', True)
+                
+                if action in ("on", "off"):
+                    new_value = True if action == "on" else False
+                    await self.db.collections['users'].update_one(
+                        {'user_id': update.effective_user.id},
+                        {'$set': {'notifications_enabled': new_value, 'updated_at': datetime.utcnow()}},
+                        upsert=True
+                    )
+                    status_text = "פעילות" if new_value else "כבויות"
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה", callback_data="settings_back")]
+                    ])
+                    await query.edit_message_text(
+                        f"✅ התראות כעת {status_text} למשתמש זה.",
+                        reply_markup=keyboard
+                    )
+                else:
+                    # Show submenu with appropriate toggle option
+                    if current_enabled:
+                        toggle_button = InlineKeyboardButton("🔕 כבה התראות", callback_data="settings_notifications_off")
+                    else:
+                        toggle_button = InlineKeyboardButton("🔔 הפעל התראות", callback_data="settings_notifications_on")
+                    keyboard = InlineKeyboardMarkup([
+                        [toggle_button],
+                        [InlineKeyboardButton("⬅️ חזרה", callback_data="settings_back")]
+                    ])
+                    status_text = "מופעלות" if current_enabled else "כבויות"
+                    await query.edit_message_text(
+                        f"🔔 הגדרות התראות\n\nמצב נוכחי: {status_text}",
+                        reply_markup=keyboard
+                    )
+            elif setting == "frequency":
+                # patterns: settings_frequency, settings_frequency_<minutes>
+                if len(parts) == 3 and parts[2].isdigit():
+                    minutes = int(parts[2])
+                    minutes = max(config.MIN_CHECK_INTERVAL, min(config.MAX_CHECK_INTERVAL, minutes))
+                    await self.db.collections['users'].update_one(
+                        {'user_id': update.effective_user.id},
+                        {'$set': {'default_check_interval': minutes, 'updated_at': datetime.utcnow()}},
+                        upsert=True
+                    )
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ חזרה", callback_data="settings_back")]
+                    ])
+                    await query.edit_message_text(
+                        f"✅ התדירות הכללית עודכנה ל-{self._get_frequency_text(minutes)}.",
+                        reply_markup=keyboard
+                    )
+                else:
+                    # Show frequency options submenu
+                    keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("⏱ כל 10 דקות", callback_data="settings_frequency_10"),
+                            InlineKeyboardButton("🕐 כל שעה", callback_data="settings_frequency_60")
+                        ],
+                        [
+                            InlineKeyboardButton("🕒 כל 3 שעות", callback_data="settings_frequency_180"),
+                            InlineKeyboardButton("🕕 כל 6 שעות", callback_data="settings_frequency_360")
+                        ],
+                        [InlineKeyboardButton("⬅️ חזרה", callback_data="settings_back")]
+                    ])
+                    await query.edit_message_text(
+                        "⏰ תדירות בדיקה כללית\n\nבחרו את ברירת המחדל לבדיקה של מוצרים חדשים:",
+                        reply_markup=keyboard
+                    )
+            else:
+                # Unknown or main menu request: show menu again
+                await show_main_settings_menu()
             
         except Exception as e:
             logger.error(f"❌ Error in settings handler: {e}")
@@ -663,6 +762,12 @@ class StockTrackerBot:
     async def _send_stock_notification(self, tracking: ProductTracking):
         """Send stock available notification"""
         try:
+            # Respect user's notification settings
+            user_doc = await self.db.collections['users'].find_one({'user_id': tracking.user_id})
+            if user_doc and user_doc.get('notifications_enabled', True) is False:
+                logger.info(f"🔕 Notifications disabled for user {tracking.user_id}, skipping alert")
+                return
+
             message = BOT_MESSAGES['back_in_stock'].format(
                 product_name=tracking.product_name,
                 store_name=tracking.store_name,
