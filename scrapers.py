@@ -467,7 +467,7 @@ class StockScraper:
                         parsed = urlparse(url)
                         q = parse_qs(parsed.query)
                         if 'ite_item' in q and q['ite_item'] and q['ite_item'][0]:
-                            popup_name = await self._fetch_mashkar_popup_name(q['ite_item'][0], store_config)
+                            popup_name = await self._fetch_mashkar_popup_name(q['ite_item'][0], url, store_config)
                             if popup_name:
                                 product_name = popup_name
                     except Exception:
@@ -735,7 +735,7 @@ class StockScraper:
             pass
         return None
 
-    async def _fetch_mashkar_popup_name(self, item_id: str, store_config: Dict[str, Any]) -> Optional[str]:
+    async def _fetch_mashkar_popup_name(self, item_id: str, source_url: str, store_config: Dict[str, Any]) -> Optional[str]:
         """Fetch and parse the Mashkar popup HTML to extract the product name."""
         try:
             if not self.session:
@@ -743,6 +743,10 @@ class StockScraper:
             headers = dict(self.headers)
             if 'headers' in store_config:
                 headers.update(store_config['headers'])
+            # Avoid brotli issues and set proper referer
+            headers['Accept-Encoding'] = 'gzip, deflate'
+            headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            headers['Referer'] = source_url
             popup_hosts = [
                 'meshekard.co.il', 'www.meshekard.co.il',
                 'mashkarcard.co.il', 'www.mashkarcard.co.il'
@@ -757,13 +761,31 @@ class StockScraper:
                         html = await resp.text()
                         soup = BeautifulSoup(html, 'html.parser')
                         selectors = store_config.get('name_selectors', []) or []
-                        generic = ['#hdTitle', '#itemTitle', '[id*="lblTitle"]', '[id*="lblItem"]', '.product-title', '.item-title', 'h1']
-                        for sel in selectors + [s for s in generic if s not in selectors]:
+                        generic = [
+                            '#hdTitle', '#itemTitle', '[id*="lblTitle"]', '[id*="lblItem"]',
+                            'input#hdTitle', 'input[name*="hdTitle"]', 'input[id*="ItemName"]', 'input[name*="ItemName"]',
+                            '.product-title', '.product-name', '.item-title', 'h1'
+                        ]
+                        full_list = selectors + [s for s in generic if s not in selectors]
+                        # 1) Inputs value/title
+                        for sel in full_list:
                             el = soup.select_one(sel)
-                            if el and el.get_text(strip=True):
-                                name = el.get_text(strip=True)
-                                if name and name not in {store_config.get('name', '').strip()}:
-                                    return name
+                            if not el:
+                                continue
+                            val = el.get('value') or el.get('title')
+                            if val and val.strip() and val.strip() not in {store_config.get('name', '').strip()}:
+                                return val.strip()
+                            txt = el.get_text(strip=True) if hasattr(el, 'get_text') else None
+                            if txt and txt.strip() and txt.strip() not in {store_config.get('name', '').strip()}:
+                                return txt.strip()
+                        # 2) Meta/title fallbacks
+                        og = soup.select_one('meta[property="og:title"]')
+                        if og and og.get('content') and og.get('content').strip():
+                            return og.get('content').strip()
+                        if soup.title and soup.title.get_text(strip=True):
+                            title_text = soup.title.get_text(strip=True)
+                            if title_text and title_text != store_config.get('name', '').strip():
+                                return title_text
                 except Exception:
                     continue
         except Exception:
