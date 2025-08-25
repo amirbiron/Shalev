@@ -253,7 +253,44 @@ class StockTrackerBot:
             # Add to database
             tracking_id = await self.db.add_tracking(tracking)
             if not tracking_id:
-                await update.message.reply_text(BOT_MESSAGES['already_tracking'])
+                # Fetch existing tracking and present management options
+                query = {
+                    'user_id': user_id,
+                    '$or': [
+                        {'product_url': url}
+                    ]
+                }
+                if product_key:
+                    query['$or'].append({'product_key': product_key, 'store_id': store_info['store_id']})
+
+                existing = await self.db.collections['trackings'].find_one(query)
+                if existing:
+                    from bson import ObjectId
+                    existing_id = str(existing.get('_id'))
+                    existing_status = existing.get('status', 'active')
+                    status_map = {
+                        'active': 'פעיל',
+                        'paused': 'מושהה',
+                        'in_stock': 'במלאי',
+                        'out_of_stock': 'אזל',
+                        'error': 'שגיאה'
+                    }
+                    keyboard_buttons = []
+                    if existing_status == 'paused':
+                        keyboard_buttons.append([InlineKeyboardButton("▶️ חידוש מעקב", callback_data=f"resume_{existing_id}")])
+                    else:
+                        keyboard_buttons.append([InlineKeyboardButton("⏸ השהה מעקב", callback_data=f"pause_{existing_id}")])
+                    keyboard_buttons.append([InlineKeyboardButton("🗑 הסר מעקב", callback_data=f"remove_{existing_id}")])
+
+                    await update.message.reply_text(
+                        f"✅ כבר קיים מעקב למוצר הזה.\n\n"
+                        f"📦 {existing.get('product_name', 'מוצר')}\n"
+                        f"🏪 {existing.get('store_name', store_info['name'])}\n"
+                        f"📊 סטטוס: {status_map.get(existing_status, existing_status)}",
+                        reply_markup=InlineKeyboardMarkup(keyboard_buttons)
+                    )
+                else:
+                    await update.message.reply_text(BOT_MESSAGES['already_tracking'])
                 return ConversationHandler.END
             
             # Create frequency selection keyboard
