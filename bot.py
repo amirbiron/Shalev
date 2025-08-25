@@ -220,6 +220,26 @@ class StockTrackerBot:
             # Get product info from scraper
             logger.info(f"URL received: {url} | store={store_info['store_id']}")
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
+            # Repair product name if it looks invalid (e.g., equals store name or placeholder)
+            try:
+                def _is_invalid(name: str) -> bool:
+                    if not name:
+                        return True
+                    normalized = str(name).strip().strip('"\'')
+                    return normalized in {"לא זמין", store_info['name'].strip()} or len(normalized) < 3
+                if _is_invalid(product_info.name):
+                    guessed = self.scraper.guess_product_name_from_url(url)
+                    if guessed:
+                        product_info = type(product_info)(
+                            name=guessed,
+                            price=product_info.price,
+                            in_stock=product_info.in_stock,
+                            stock_text=product_info.stock_text,
+                            last_checked=product_info.last_checked,
+                            error_message=product_info.error_message
+                        )
+            except Exception:
+                pass
             if (
                 not product_info or
                 getattr(product_info, 'error_message', None) or

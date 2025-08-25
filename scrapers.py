@@ -273,7 +273,7 @@ class StockScraper:
             await asyncio.sleep(2)
             
             # Extract product information
-            product_info = await self._extract_product_info_playwright(page, store_config)
+            product_info = await self._extract_product_info_playwright(page, store_config, url)
             
             return product_info
             
@@ -372,7 +372,7 @@ class StockScraper:
             logger.error(f"❌ HTTP scraping error: {e}")
             raise
     
-    async def _extract_product_info_playwright(self, page: Page, store_config: Dict[str, Any]) -> ProductInfo:
+    async def _extract_product_info_playwright(self, page: Page, store_config: Dict[str, Any], url: str) -> ProductInfo:
         """Extract product info from Playwright page"""
         try:
             # Product name (store-specific first, then generic; also try frames/title/meta)
@@ -434,6 +434,15 @@ class StockScraper:
                         product_name = title_text
                 except Exception:
                     pass
+            
+            # If still invalid or equals store name, try URL-based guess
+            try:
+                if self._is_invalid_product_name(product_name, store_config):
+                    url_guess = self.guess_product_name_from_url(url)
+                    if url_guess:
+                        product_name = url_guess
+            except Exception:
+                pass
             
             # Price
             price_selectors = [
@@ -536,6 +545,12 @@ class StockScraper:
             if product_name == "לא זמין":
                 if soup.title and soup.title.get_text(strip=True):
                     product_name = soup.title.get_text(strip=True)
+            
+            # If still invalid or equals store name, try URL-based guess
+            if self._is_invalid_product_name(product_name, store_config):
+                url_guess = self.guess_product_name_from_url(url)
+                if url_guess:
+                    product_name = url_guess
             
             # Price
             price_selectors = [
@@ -722,6 +737,64 @@ class StockScraper:
             return match.group(1) if match else None
         except:
             return None
+    
+    def _is_invalid_product_name(self, name: Optional[str], store_config: Dict[str, Any]) -> bool:
+        """Heuristics to detect invalid product names (empty, store name, placeholders)."""
+        try:
+            if not name:
+                return True
+            normalized = re.sub(r"\s+", " ", str(name)).strip().strip('"\'')
+            if not normalized:
+                return True
+            # Treat obvious placeholders as invalid
+            if normalized in {"לא זמין", store_config.get('name', '').strip()}:
+                return True
+            # Too short (e.g., one word store name)
+            if len(normalized) < 3:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def guess_product_name_from_url(self, url: str) -> Optional[str]:
+        """Best-effort guess of product name from URL slug for known patterns.
+        Example: https://www.mashkarcard.co.il/product/12345-שם-מוצר -> "שם מוצר"
+        """
+        try:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            # Some legacy patterns may include a text param
+            for key in ("title", "name", "item_name", "ite_text"):
+                if key in query and query[key] and query[key][0]:
+                    val = query[key][0]
+                    try:
+                        from urllib.parse import unquote
+                        val = unquote(val)
+                    except Exception:
+                        pass
+                    val = val.replace('-', ' ').replace('_', ' ').strip().strip('"\'')
+                    if len(val) >= 3:
+                        return val
+
+            # Path-based slug: /product/<id>-slug or /product/slug
+            path = parsed.path or ""
+            # Take the segment after "/product/"
+            m = re.search(r"/product/([^/?#]+)", path, re.IGNORECASE)
+            if m:
+                segment = m.group(1)
+                # Remove numeric id prefix like 12345-, 12345_
+                segment = re.sub(r"^\d+[-_]?", "", segment)
+                try:
+                    from urllib.parse import unquote
+                    segment = unquote(segment)
+                except Exception:
+                    pass
+                candidate = segment.replace('-', ' ').replace('_', ' ').strip().strip('"\'')
+                if len(candidate) >= 3 and any(ch.isalpha() for ch in candidate):
+                    return candidate
+        except Exception:
+            pass
+        return None
     
     # Batch processing utilities
     async def check_multiple_stocks(self, urls_and_stores: List[Tuple[str, str]]) -> Dict[str, Optional[bool]]:
