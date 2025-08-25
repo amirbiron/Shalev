@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 # FastAPI for health check (Render requirement)
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -19,6 +19,7 @@ import uvicorn
 from telegram import Bot
 from telegram.ext import Application, ContextTypes
 from telegram.request import HTTPXRequest
+from telegram.error import NetworkError as TgNetworkError
 
 # Local imports
 from config import config, BOT_MESSAGES
@@ -40,11 +41,12 @@ logger = logging.getLogger(__name__)
 bot_instance: Optional[StockTrackerBot] = None
 db_manager: Optional[DatabaseManager] = None
 telegram_app: Optional[Application] = None
+polling_task: Optional[asyncio.Task] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
-    global bot_instance, db_manager, telegram_app
+    global bot_instance, db_manager, telegram_app, polling_task
     
     logger.info("🚀 Starting Stock Tracker Bot...")
     
@@ -60,10 +62,10 @@ async def lifespan(app: FastAPI):
         
         # Create Telegram application with robust HTTP client (timeouts, no HTTP/2)
         request = HTTPXRequest(
-            connect_timeout=10,
-            read_timeout=30,
+            connect_timeout=20,
+            read_timeout=90,
             write_timeout=30,
-            pool_timeout=10,
+            pool_timeout=20,
             http_version="1.1",
         )
         telegram_app = (
@@ -78,6 +80,10 @@ async def lifespan(app: FastAPI):
 
         # Global error handler for better diagnostics of transient network errors
         async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
+            # Downgrade noisy network read errors to warnings; keep others as exceptions
+            if isinstance(context.error, TgNetworkError):
+                logger.warning(f"Transient Telegram network error: {context.error}")
+                return
             logger.exception("Unhandled error", exc_info=context.error)
         telegram_app.add_error_handler(on_error)
         
@@ -96,8 +102,19 @@ async def lifespan(app: FastAPI):
             logger.info("🔄 Starting polling mode...")
             await telegram_app.initialize()
             await telegram_app.start()
-            # Start polling in background
-            asyncio.create_task(telegram_app.updater.start_polling())
+            # Ensure webhook is disabled before polling
+            try:
+                await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+            except Exception as e:
+                logger.warning(f"Failed to delete webhook before polling: {e}")
+            # Start polling in background with explicit long-poll timeout and no backlog
+            polling_task = asyncio.create_task(
+                telegram_app.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=['message', 'callback_query'],
+                    timeout=60
+                )
+            )
         
         # Start the scheduler
         logger.info("⏰ Starting stock check scheduler...")
@@ -118,6 +135,27 @@ async def lifespan(app: FastAPI):
             await bot_instance.stop_scheduler()
         
         if telegram_app:
+            # If ran in polling mode, stop updater and await polling task
+            if polling_task:
+                try:
+                    if telegram_app.updater and telegram_app.updater.running:
+                        await telegram_app.updater.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping updater: {e}")
+                # Await polling task completion
+                try:
+                    await polling_task
+                except Exception as e:
+                    logger.warning(f"Error awaiting polling task: {e}")
+                finally:
+                    polling_task = None
+            else:
+                # Webhook mode: remove webhook before shutdown to avoid getUpdates conflict
+                try:
+                    await telegram_app.bot.delete_webhook(drop_pending_updates=False)
+                except Exception as e:
+                    logger.warning(f"Error deleting webhook during shutdown: {e}")
+            # Then stop & shutdown application
             await telegram_app.stop()
             await telegram_app.shutdown()
         
@@ -189,7 +227,7 @@ async def health_check():
         )
 
 @app.post("/telegram-webhook")
-async def telegram_webhook(request):
+async def telegram_webhook(request: Request):
     """Handle Telegram webhook (production only)"""
     if not telegram_app:
         raise HTTPException(status_code=503, detail="Bot not initialized")
