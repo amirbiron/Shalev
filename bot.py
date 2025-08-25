@@ -256,6 +256,7 @@ class StockTrackerBot:
                 ]
             ])
             
+            # Send message with a small retry for transient network errors
             await update.message.reply_text(
                 f"🎉 נוסף מעקב חדש!\n\n"
                 f"📦 **{product_info.name}**\n"

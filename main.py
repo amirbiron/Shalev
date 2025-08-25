@@ -17,7 +17,8 @@ import uvicorn
 
 # Telegram Bot
 from telegram import Bot
-from telegram.ext import Application
+from telegram.ext import Application, ContextTypes
+from telegram.request import HTTPXRequest
 
 # Local imports
 from config import config, BOT_MESSAGES
@@ -57,15 +58,28 @@ async def lifespan(app: FastAPI):
         logger.info("🤖 Initializing Telegram bot...")
         bot_instance = StockTrackerBot(db_manager)
         
-        # Create Telegram application
+        # Create Telegram application with robust HTTP client (timeouts, no HTTP/2)
+        request = HTTPXRequest(
+            connect_timeout=10,
+            read_timeout=30,
+            write_timeout=30,
+            pool_timeout=10,
+            http2=False,
+        )
         telegram_app = (
             Application.builder()
             .token(config.TELEGRAM_TOKEN)
+            .request(request)
             .build()
         )
         
         # Setup bot handlers
         bot_instance.setup_handlers(telegram_app)
+
+        # Global error handler for better diagnostics of transient network errors
+        async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
+            logger.exception("Unhandled error", exc_info=context.error)
+        telegram_app.add_error_handler(on_error)
         
         # Start the bot
         if config.ENVIRONMENT == 'production' and config.WEBHOOK_URL:
