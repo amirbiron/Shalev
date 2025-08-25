@@ -31,7 +31,6 @@ class ProductTracking:
     """Product tracking model"""
     user_id: int
     product_url: str
-    product_key: Optional[str] = None
     product_name: str
     store_name: str
     store_id: str
@@ -43,6 +42,7 @@ class ProductTracking:
     updated_at: Optional[datetime] = None
     error_count: int = 0
     notification_sent: bool = False
+    product_key: Optional[str] = None
     _id: Optional[ObjectId] = None
 
     def to_dict(self) -> Dict[str, Any]:
