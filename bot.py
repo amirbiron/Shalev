@@ -302,7 +302,12 @@ class StockTrackerBot:
                     check_interval=default_interval,
                     status=TrackingStatus.ACTIVE
                 )
-                tracking_id = await self.db.add_tracking(tracking)
+                try:
+                    tracking_id = await self.db.add_tracking(tracking)
+                except Exception as e:
+                    logger.error(f"DB add_tracking failed for user={user_id} url={url}: {e}")
+                    await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                    return ConversationHandler.END
                 if not tracking_id:
                     await update.message.reply_text(BOT_MESSAGES['error_occurred'])
                     return ConversationHandler.END
