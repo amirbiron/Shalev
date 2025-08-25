@@ -323,7 +323,39 @@ class StockScraper:
                 except StopIteration:
                     pass
 
-            # Meta fallbacks
+            # JSON-LD Product (schema.org) and Meta fallbacks
+            if product_name == "לא זמין":
+                try:
+                    scripts = await page.query_selector_all('script[type="application/ld+json"]')
+                    for sc in scripts:
+                        try:
+                            raw = await sc.inner_text()
+                            import json
+                            data = json.loads(raw)
+                            def extract_name(obj: Any) -> Optional[str]:
+                                if isinstance(obj, dict):
+                                    if obj.get('@type') in ['Product', 'schema:Product'] and isinstance(obj.get('name'), str):
+                                        return obj['name']
+                                    # common ecommerce nesting
+                                    for k in ['item', 'product', 'data']:
+                                        if k in obj:
+                                            n = extract_name(obj[k])
+                                            if n:
+                                                return n
+                                if isinstance(obj, list):
+                                    for it in obj:
+                                        n = extract_name(it)
+                                        if n:
+                                            return n
+                                return None
+                            name_ld = extract_name(data)
+                            if name_ld and name_ld.strip():
+                                product_name = name_ld.strip()
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             if product_name == "לא זמין":
                 for meta_sel in ['meta[property="og:title"]', 'meta[name="twitter:title"]', 'meta[name="title"]']:
                     try:
@@ -350,11 +382,32 @@ class StockScraper:
                 except Exception:
                     pass
 
-            # URL-based guess
+            # URL-based guess and Meshkard popup fallback URL
             if self._is_invalid_product_name(product_name, store_config):
                 url_guess = self.guess_product_name_from_url(url)
                 if url_guess:
                     product_name = url_guess
+                # Build a canonical popup URL if only ite_item param exists (legacy meshekard)
+                if self._is_invalid_product_name(product_name, store_config):
+                    try:
+                        parsed = urlparse(url)
+                        q = parse_qs(parsed.query)
+                        if 'ite_item' in q and q['ite_item'] and q['ite_item'][0]:
+                            item_id = q['ite_item'][0]
+                            popup_url = f"https://meshekard.co.il/index_popup_meshek.aspx?ite_item={item_id}"
+                            # Try navigating the same page to popup URL quickly to read title
+                            try:
+                                await page.goto(popup_url, wait_until='domcontentloaded', timeout=5000)
+                                await asyncio.sleep(1)
+                                el = await page.query_selector('#hdTitle, #itemTitle, [id*="lblTitle"], .product-title, h1')
+                                if el:
+                                    txt = (await el.inner_text()).strip()
+                                    if txt:
+                                        product_name = txt
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
             # Mashkar API fallback (if still invalid)
             if self._is_invalid_product_name(product_name, store_config) and 'mashkar' in store_config.get('name', '').lower():
@@ -436,6 +489,36 @@ class StockScraper:
                     product_name = element.get_text(strip=True)
                     break
 
+            # JSON-LD Product (schema.org) and Title fallbacks
+            if product_name == "לא זמין":
+                try:
+                    for sc in soup.select('script[type="application/ld+json"]'):
+                        import json
+                        raw = sc.get_text(strip=True)
+                        if not raw:
+                            continue
+                        data = json.loads(raw)
+                        def extract_name(obj: Any) -> Optional[str]:
+                            if isinstance(obj, dict):
+                                if obj.get('@type') in ['Product', 'schema:Product'] and isinstance(obj.get('name'), str):
+                                    return obj['name']
+                                for k in ['item', 'product', 'data']:
+                                    if k in obj:
+                                        n = extract_name(obj[k])
+                                        if n:
+                                            return n
+                            if isinstance(obj, list):
+                                for it in obj:
+                                    n = extract_name(it)
+                                    if n:
+                                        return n
+                            return None
+                        n = extract_name(data)
+                        if n and n.strip():
+                            product_name = n.strip()
+                            break
+                except Exception:
+                    pass
             if product_name == "לא זמין":
                 for meta_sel in ['meta[property="og:title"]', 'meta[name="twitter:title"]', 'meta[name="title"]']:
                     meta = soup.select_one(meta_sel)
