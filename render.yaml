@@ -11,6 +11,7 @@ services:
     
     # Docker build configuration
     dockerfilePath: ./Dockerfile
+    preDeployCommand: "true"
     
     # Auto Deploy Settings
     autoDeploy: true
@@ -91,7 +92,7 @@ services:
       - name: your-bot-domain.onrender.com  # Replace with your custom domain
     
     # Advanced Settings
-    dockerCommand: python main.py
+    dockerCommand: python -u main.py
     
     # Monitoring & Alerts
     alerts:
