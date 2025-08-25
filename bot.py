@@ -356,7 +356,8 @@ class StockTrackerBot:
                 return
             
             # Group by status
-            active_trackings = [t for t in trackings if t.status == TrackingStatus.ACTIVE]
+            active_like_statuses = {TrackingStatus.ACTIVE, TrackingStatus.IN_STOCK, TrackingStatus.OUT_OF_STOCK}
+            active_trackings = [t for t in trackings if t.status in active_like_statuses]
             paused_trackings = [t for t in trackings if t.status == TrackingStatus.PAUSED]
             
             message = "📜 **הרשימה שלכם:**\n\n"
@@ -364,7 +365,7 @@ class StockTrackerBot:
             if active_trackings:
                 message += "🟢 **פעילים:**\n"
                 for i, tracking in enumerate(active_trackings[:10], 1):
-                    status_emoji = "✅" if tracking.status == TrackingStatus.IN_STOCK else "❌"
+                    status_emoji = "✅" if tracking.status == TrackingStatus.IN_STOCK else ("❌" if tracking.status == TrackingStatus.OUT_OF_STOCK else "🟡")
                     last_check = ""
                     if tracking.last_checked:
                         time_diff = datetime.utcnow() - tracking.last_checked
