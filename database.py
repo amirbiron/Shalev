@@ -270,11 +270,10 @@ class DatabaseManager:
             existing = await self.collections['trackings'].find_one(url_or_key_query)
             if existing:
                 logger.info(
-                    f"🔁 Duplicate tracking prevented for user {tracking.user_id}: "
+                    f"🔁 Duplicate tracking detected for user {tracking.user_id}: "
                     f"url={tracking.product_url}, key={tracking.product_key}, store={tracking.store_id}"
                 )
-                return None  # Already exists
-            
+                return existing.get('_id')  # Return existing id
             
             # Set timestamps
             now = datetime.utcnow()
@@ -301,6 +300,21 @@ class DatabaseManager:
             return result.inserted_id
             
         except DuplicateKeyError:
+            # Return existing id on duplicate
+            existing = await self.collections['trackings'].find_one({
+                'user_id': tracking.user_id,
+                'product_url': tracking.product_url
+            })
+            if existing:
+                return existing.get('_id')
+            elif tracking.product_key:
+                existing = await self.collections['trackings'].find_one({
+                    'user_id': tracking.user_id,
+                    'product_key': tracking.product_key,
+                    'store_id': tracking.store_id
+                })
+                if existing:
+                    return existing.get('_id')
             return None
         except Exception as e:
             logger.error(f"❌ Error adding tracking: {e}")
