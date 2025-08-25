@@ -132,11 +132,46 @@ class StockScraper:
             
             logger.info(f"🔍 Getting product info from {store_config['name']}: {url}")
             
-            # Choose scraping strategy based on store requirements
-            if store_config.get('requires_js', False):
-                return await self._scrape_with_playwright(url, store_config)
+            # Prefer lightweight HTTP; fallback to Playwright if needed or required
+            requires_js = store_config.get('requires_js', False)
+
+            # First attempt
+            first_result: Optional[ProductInfo] = None
+            first_error: Optional[Exception] = None
+            if not requires_js:
+                try:
+                    first_result = await self._scrape_with_http(url, store_config)
+                except Exception as e:
+                    first_error = e
             else:
-                return await self._scrape_with_http(url, store_config)
+                try:
+                    first_result = await self._scrape_with_playwright(url, store_config)
+                except Exception as e:
+                    first_error = e
+
+            # If first attempt succeeded with meaningful data, return it
+            if first_result and not first_result.error_message and (first_result.name and first_result.name != "לא זמין"):
+                return first_result
+
+            # Fallback attempt (swap strategy)
+            try:
+                if requires_js:
+                    # JS required failed or incomplete → try HTTP as fallback
+                    return await self._scrape_with_http(url, store_config)
+                else:
+                    # HTTP failed or incomplete → try Playwright once
+                    return await self._scrape_with_playwright(url, store_config)
+            except Exception as e:
+                logger.error(f"❌ Fallback scraping error: {e}")
+                # Return structured error
+                return ProductInfo(
+                    name="שגיאה בטעינת המוצר",
+                    price=None,
+                    in_stock=False,
+                    stock_text="שגיאה",
+                    last_checked="",
+                    error_message=str(first_error or e)
+                )
                 
         except Exception as e:
             logger.error(f"❌ Error getting product info from {url}: {e}")
@@ -168,12 +203,22 @@ class StockScraper:
     
     async def _scrape_with_playwright(self, url: str, store_config: Dict[str, Any]) -> ProductInfo:
         """Scrape using Playwright for JavaScript-heavy sites"""
+        # Ensure browser exists; if closed, re-init
         if not self.browser:
             await self.init_browser()
         
         page = None
         try:
-            page = await self.browser.new_page()
+            try:
+                page = await self.browser.new_page()
+            except Exception as e:
+                # Attempt one re-init if browser/page was closed
+                if 'has been closed' in str(e).lower() or 'target page' in str(e).lower():
+                    logger.warning("🔁 Browser was closed; reinitializing and retrying once...")
+                    await self.init_browser()
+                    page = await self.browser.new_page()
+                else:
+                    raise
             
             # Set additional headers if specified
             if 'headers' in store_config:
@@ -438,7 +483,15 @@ class StockScraper:
         
         page = None
         try:
-            page = await self.browser.new_page()
+            try:
+                page = await self.browser.new_page()
+            except Exception as e:
+                if 'has been closed' in str(e).lower() or 'target page' in str(e).lower():
+                    logger.warning("🔁 Browser was closed during quick check; reinitializing...")
+                    await self.init_browser()
+                    page = await self.browser.new_page()
+                else:
+                    raise
             
             # Navigate with shorter timeout
             await page.goto(url, wait_until='domcontentloaded', timeout=15000)
