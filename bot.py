@@ -400,6 +400,7 @@ class StockTrackerBot:
             active_like_statuses = {TrackingStatus.ACTIVE, TrackingStatus.IN_STOCK, TrackingStatus.OUT_OF_STOCK}
             active_trackings = [t for t in trackings if t.status in active_like_statuses]
             paused_trackings = [t for t in trackings if t.status == TrackingStatus.PAUSED]
+            error_trackings = [t for t in trackings if t.status == TrackingStatus.ERROR]
             
             message = "📜 **הרשימה שלכם:**\n\n"
             
@@ -424,6 +425,12 @@ class StockTrackerBot:
                     message += f"• **{tracking.product_name[:30]}{'...' if len(tracking.product_name) > 30 else ''}**\n"
                     message += f"  🏪 {tracking.store_name}\n"
             
+            if error_trackings:
+                message += "\n⚠️ **בשגיאה:**\n"
+                for tracking in error_trackings[:5]:
+                    message += f"• **{tracking.product_name[:30]}{'...' if len(tracking.product_name) > 30 else ''}**\n"
+                    message += f"  🏪 {tracking.store_name}\n"
+            
             # Create inline keyboard for management
             keyboard_buttons = []
             for i, tracking in enumerate(active_trackings[:5]):
@@ -434,6 +441,18 @@ class StockTrackerBot:
                     ),
                     InlineKeyboardButton(
                         f"🗑 הסר #{i+1}",
+                        callback_data=f"remove_{tracking._id}"
+                    )
+                ])
+            # Add management buttons for error trackings (resume/remove)
+            for j, tracking in enumerate(error_trackings[:3]):
+                keyboard_buttons.append([
+                    InlineKeyboardButton(
+                        f"▶️ חידוש ✳️#{j+1}",
+                        callback_data=f"resume_{tracking._id}"
+                    ),
+                    InlineKeyboardButton(
+                        f"🗑 הסר ✳️#{j+1}",
                         callback_data=f"remove_{tracking._id}"
                     )
                 ])
