@@ -44,6 +44,9 @@ class BotConfig:
     ENVIRONMENT: str = os.getenv('ENVIRONMENT', 'development')
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
     
+    # Runtime toggles
+    FORCE_POLLING: bool = os.getenv('FORCE_POLLING', 'False').lower() == 'true'
+    
     # Logging
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
     LOG_FORMAT: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
