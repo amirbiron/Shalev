@@ -214,28 +214,57 @@ class StockScraper:
                     raise
             if 'headers' in store_config:
                 await page.set_extra_http_headers(store_config['headers'])
-            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+
+            # Build candidate URLs: prefer popup URL for meshekard ite_item
+            candidates: List[str] = []
             try:
-                if 'meshekard.co.il' in url:
-                    await asyncio.sleep(1.0)
+                parsed = urlparse(url)
+                host = parsed.netloc.replace('www.', '')
+                q = parse_qs(parsed.query)
+                if host in ['meshekard.co.il', 'mashkarcard.co.il'] and 'ite_item' in q and q['ite_item'] and q['ite_item'][0]:
+                    item_id = q['ite_item'][0]
+                    for h in ['meshekard.co.il', 'mashkarcard.co.il']:
+                        candidates.append(f"https://{h}/index_popup_meshek.aspx?ite_item={item_id}")
             except Exception:
                 pass
-            await asyncio.sleep(2)
+            # Always try the original URL as well
+            candidates.append(url)
 
-            # If site opened a popup window (common in meshekard), use the newest page
-            try:
-                context_pages = page.context.pages
-                content_page = context_pages[-1] if context_pages and context_pages[-1] is not None else page
-                if content_page != page:
+            last_error: Optional[Exception] = None
+            for target in candidates:
+                try:
+                    await page.goto(target, wait_until='domcontentloaded', timeout=30000)
+                    # Small wait for dynamic content
+                    await asyncio.sleep(2)
+
+                    # If site opened a popup window, switch to the newest page
                     try:
-                        await content_page.bring_to_front()
+                        context_pages = page.context.pages
+                        content_page = context_pages[-1] if context_pages and context_pages[-1] is not None else page
+                        if content_page != page:
+                            try:
+                                await content_page.bring_to_front()
+                            except Exception:
+                                pass
                     except Exception:
-                        pass
-            except Exception:
-                content_page = page
+                        content_page = page
 
-            product_info = await self._extract_product_info_playwright(content_page, store_config, url)
-            return product_info
+                    info = await self._extract_product_info_playwright(content_page, store_config, target)
+                    # If we got a meaningful product name, return it
+                    if info and info.name and info.name not in ["לא זמין", store_config.get('name', '')]:
+                        return info
+                    # Otherwise, try next candidate
+                except Exception as e:
+                    last_error = e
+                    continue
+
+            # If all candidates failed to yield a good name, return the last attempt (or raise)
+            if last_error:
+                logger.warning(f"⚠️ Playwright scraping degraded for {url}: {last_error}")
+            # As a degraded fallback, try once more on the original URL
+            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            await asyncio.sleep(2)
+            return await self._extract_product_info_playwright(page, store_config, url)
         except PlaywrightTimeoutError:
             logger.warning(f"⏱️ Timeout loading page: {url}")
             return ProductInfo(
