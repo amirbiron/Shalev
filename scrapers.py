@@ -486,9 +486,11 @@ class StockScraper:
                 except Exception:
                     continue
 
-            # Stock status
+            # Stock status (prefer positive indicators if provided)
             stock_selector = store_config.get('stock_selector', '.stock-status')
             out_of_stock_indicators = store_config.get('out_of_stock_indicators', ['אזל', 'לא זמין'])
+            in_stock_indicators = store_config.get('in_stock_indicators', ['במלאי', 'זמין'])
+            strict_availability = store_config.get('strict_availability', False)
             stock_text = ""
             in_stock = True
             try:
@@ -500,19 +502,30 @@ class StockScraper:
                             stock_text = text
                             break
                 if stock_text:
-                    for indicator in out_of_stock_indicators:
-                        if indicator in stock_text:
-                            in_stock = False
+                    # Prefer positive match
+                    for pos in in_stock_indicators:
+                        if pos in stock_text:
+                            in_stock = True
                             break
+                    else:
+                        for indicator in out_of_stock_indicators:
+                            if indicator in stock_text:
+                                in_stock = False
+                                break
                 else:
                     page_content = await page.content()
-                    for indicator in out_of_stock_indicators:
-                        if indicator in page_content:
-                            in_stock = False
-                            stock_text = indicator
-                            break
-                    if not stock_text:
-                        stock_text = "במלאי" if in_stock else "לא זמין"
+                    if strict_availability:
+                        # In strict mode avoid whole-page fallback to reduce false negatives
+                        in_stock = True
+                        stock_text = ""
+                    else:
+                        for indicator in out_of_stock_indicators:
+                            if indicator in page_content:
+                                in_stock = False
+                                stock_text = indicator
+                                break
+                        if not stock_text:
+                            stock_text = "במלאי" if in_stock else "לא זמין"
             except Exception as e:
                 logger.warning(f"⚠️ Could not extract stock status: {e}")
                 stock_text = "לא ניתן לקבוע"
