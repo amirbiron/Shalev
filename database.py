@@ -44,8 +44,6 @@ class ProductTracking:
     error_count: int = 0
     notification_sent: bool = False
     product_key: Optional[str] = None
-    offer_id: Optional[str] = None
-    offer_name: Optional[str] = None
     _id: Optional[ObjectId] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -339,8 +337,6 @@ class DatabaseManager:
                     store_id=doc['store_id'],
                     check_interval=doc['check_interval'],
                     status=TrackingStatus(doc['status']),
-                    offer_id=doc.get('offer_id'),
-                    offer_name=doc.get('offer_name'),
                     last_checked=doc.get('last_checked'),
                     last_status_change=doc.get('last_status_change'),
                     created_at=doc.get('created_at'),
@@ -382,8 +378,6 @@ class DatabaseManager:
                     store_id=doc['store_id'],
                     check_interval=doc['check_interval'],
                     status=TrackingStatus(doc['status']),
-                    offer_id=doc.get('offer_id'),
-                    offer_name=doc.get('offer_name'),
                     last_checked=doc.get('last_checked'),
                     last_status_change=doc.get('last_status_change'),
                     created_at=doc.get('created_at'),
