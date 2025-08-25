@@ -217,7 +217,16 @@ class StockTrackerBot:
                 await update.message.reply_text(BOT_MESSAGES['invalid_url'])
                 return WAITING_FOR_URL
             
-            # Get product info from scraper
+            # Show loading indicator and get product info from scraper
+            try:
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            except Exception:
+                pass
+            loading_msg = None
+            try:
+                loading_msg = await update.message.reply_text("⏳ טוען...")
+            except Exception:
+                loading_msg = None
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
             if (
                 not product_info or
@@ -329,7 +338,13 @@ class StockTrackerBot:
                     InlineKeyboardButton("✅ השתמש בברירת מחדל (שעה)", callback_data=f"freq_{tracking_id}_60")
                 ]
             ])
-            
+            # Delete loading message
+            try:
+                if loading_msg:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
+            except Exception:
+                pass
+
             # Send message with a small retry for transient network errors
             await update.message.reply_text(
                 f"🎉 נוסף מעקב חדש!\n\n"
