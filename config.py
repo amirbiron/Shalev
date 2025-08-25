@@ -61,6 +61,7 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'mashkar': {
         'name': 'משקארד',
         'base_url': 'https://www.mashkarcard.co.il',
+        'domains': ['meshekard.co.il', 'mashkarcard.co.il'],
         'stock_selector': '.product-stock-status',
         'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין'],
         'requires_js': True,
@@ -76,6 +77,7 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'corporate': {
         'name': 'Corporate',
         'base_url': 'https://www.corporate.co.il',
+        'domains': ['mycorporate.co.il'],
         'stock_selector': '.stock-status',
         'out_of_stock_indicators': ['אזל מהמלאי', 'Out of Stock'],
         'requires_js': True
@@ -135,6 +137,13 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
         'base_url': 'https://intel-shop.co.il',
         'stock_selector': '.availability',
         'out_of_stock_indicators': ['אזל מהמלאי', 'Out of Stock'],
+        'requires_js': False
+    },
+    'shufersal4u': {
+        'name': 'שופרסל 4U',
+        'base_url': 'https://www.shufersal4u.co.il',
+        'stock_selector': '.product-availability',
+        'out_of_stock_indicators': ['אזל', 'לא זמין', 'זמנית לא זמין'],
         'requires_js': False
     }
 }

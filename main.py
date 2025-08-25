@@ -182,6 +182,11 @@ async def root():
         "environment": config.ENVIRONMENT
     }
 
+@app.get("/uptime")
+async def uptime():
+    """Simple liveness probe that always returns 200 OK"""
+    return {"status": "ok"}
+
 @app.get("/health")
 async def health_check():
     """Detailed health check for monitoring"""
@@ -248,6 +253,11 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/telegram-webhook")
+async def telegram_webhook_get():
+    """Allow GET on webhook path for uptime checks (returns 200 OK)"""
+    return {"status": "ok"}
 
 @app.get("/stats")
 async def get_stats():
