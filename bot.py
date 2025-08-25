@@ -19,7 +19,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
 )
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ParseMode
 from telegram.error import TelegramError, Forbidden, BadRequest
 
 # Async Task Scheduling
@@ -210,7 +210,6 @@ class StockTrackerBot:
         try:
             url = update.message.text.strip()
             user_id = update.effective_user.id
-            chat_id = update.effective_chat.id
             
             # Validate URL
             store_info = self._validate_url(url)
@@ -218,17 +217,6 @@ class StockTrackerBot:
                 await update.message.reply_text(BOT_MESSAGES['invalid_url'])
                 return WAITING_FOR_URL
             
-            # Show loading indicator
-            try:
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            except Exception:
-                pass
-            loading_msg = None
-            try:
-                loading_msg = await update.message.reply_text("⏳ טוען...")
-            except Exception:
-                loading_msg = None
-
             # Get product info from scraper
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
             if (
@@ -331,13 +319,6 @@ class StockTrackerBot:
                 ]
             ])
             
-            # Delete loading message
-            try:
-                if loading_msg:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=loading_msg.message_id)
-            except Exception:
-                pass
-
             # Send message with a small retry for transient network errors
             await update.message.reply_text(
                 f"🎉 נוסף מעקב חדש!\n\n"
