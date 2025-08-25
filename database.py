@@ -256,8 +256,7 @@ class DatabaseManager:
     async def add_tracking(self, tracking: ProductTracking) -> Optional[ObjectId]:
         """Add new product tracking"""
         try:
-            # Check if tracking already exists
-            # Try to find existing by exact URL or by stable product_key (if available)
+            # Check if tracking already exists (by URL or stable product_key)
             url_or_key_query = {
                 'user_id': tracking.user_id,
                 '$or': [
@@ -265,7 +264,8 @@ class DatabaseManager:
                 ]
             }
             if tracking.product_key:
-                url_or_key_query['$or'].append({'product_key': tracking.product_key, 'store_id': tracking.store_id})
+                # Loosen store_id filter to handle legacy records
+                url_or_key_query['$or'].append({'product_key': tracking.product_key})
 
             existing = await self.collections['trackings'].find_one(url_or_key_query)
             if existing:
@@ -273,31 +273,48 @@ class DatabaseManager:
                     f"🔁 Duplicate tracking detected for user {tracking.user_id}: "
                     f"url={tracking.product_url}, key={tracking.product_key}, store={tracking.store_id}"
                 )
-                return existing.get('_id')  # Return existing id
-            
-            # Set timestamps
+                return existing.get('_id')
+
+            # Prepare document with timestamps and defaults
             now = datetime.utcnow()
             tracking.created_at = now
             tracking.updated_at = now
             tracking.status = TrackingStatus.ACTIVE
-            
-            # Insert tracking
-            result = await self.collections['trackings'].insert_one(tracking.to_dict())
-            
-            # Update user stats
-            await self.collections['users'].update_one(
-                {'user_id': tracking.user_id},
-                {
-                    '$inc': {
-                        'total_trackings': 1,
-                        'active_trackings': 1
+            doc = tracking.to_dict()
+
+            # Idempotent upsert by (user_id, product_url) to avoid DuplicateKeyError race
+            filter_q = {'user_id': tracking.user_id, 'product_url': tracking.product_url}
+            update_q = {'$setOnInsert': doc}
+            upsert_result = await self.collections['trackings'].update_one(filter_q, update_q, upsert=True)
+
+            if upsert_result.upserted_id:
+                # New document inserted
+                await self.collections['users'].update_one(
+                    {'user_id': tracking.user_id},
+                    {
+                        '$inc': {
+                            'total_trackings': 1,
+                            'active_trackings': 1
+                        },
+                        '$set': {'updated_at': now}
                     },
-                    '$set': {'updated_at': now}
-                }
-            )
+                    upsert=True
+                )
+                logger.info(f"➕ Added tracking for user {tracking.user_id}: {tracking.product_name}")
+                return upsert_result.upserted_id
+
+            # If matched existing (no insert), fetch and return its id
+            existing_after = await self.collections['trackings'].find_one(filter_q)
+            if existing_after:
+                return existing_after.get('_id')
             
-            logger.info(f"➕ Added tracking for user {tracking.user_id}: {tracking.product_name}")
-            return result.inserted_id
+            # As a last resort, try by product_key (without store filter)
+            if tracking.product_key:
+                fallback = await self.collections['trackings'].find_one({'user_id': tracking.user_id, 'product_key': tracking.product_key})
+                if fallback:
+                    return fallback.get('_id')
+            
+            return None
             
         except DuplicateKeyError:
             # Return existing id on duplicate
