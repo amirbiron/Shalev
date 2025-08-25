@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 bot_instance: Optional[StockTrackerBot] = None
 db_manager: Optional[DatabaseManager] = None
 telegram_app: Optional[Application] = None
+polling_task: Optional[asyncio.Task] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -101,8 +102,14 @@ async def lifespan(app: FastAPI):
             logger.info("🔄 Starting polling mode...")
             await telegram_app.initialize()
             await telegram_app.start()
+            # Ensure webhook is disabled before polling
+            try:
+                await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+            except Exception as e:
+                logger.warning(f"Failed to delete webhook before polling: {e}")
             # Start polling in background with explicit long-poll timeout and no backlog
-            asyncio.create_task(
+            global polling_task
+            polling_task = asyncio.create_task(
                 telegram_app.updater.start_polling(
                     drop_pending_updates=True,
                     allowed_updates=['message', 'callback_query'],
@@ -129,6 +136,21 @@ async def lifespan(app: FastAPI):
             await bot_instance.stop_scheduler()
         
         if telegram_app:
+            # Stop polling task first if running
+            try:
+                if telegram_app.updater and telegram_app.updater.running:
+                    await telegram_app.updater.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping updater: {e}")
+            # Await polling task completion
+            try:
+                global polling_task
+                if polling_task:
+                    await polling_task
+                    polling_task = None
+            except Exception as e:
+                logger.warning(f"Error awaiting polling task: {e}")
+            # Then stop & shutdown application
             await telegram_app.stop()
             await telegram_app.shutdown()
         
