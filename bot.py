@@ -219,9 +219,13 @@ class StockTrackerBot:
             
             # Get product info from scraper
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
-            if not product_info:
+            if (
+                not product_info or
+                getattr(product_info, 'error_message', None) or
+                product_info.name in {"שגיאה בטעינת המוצר", "שגיאת זמן קצוב", "שגיאה"}
+            ):
                 await update.message.reply_text(
-                    "❌ לא הצלחתי לטעון את פרטי המוצר. אנא בדקו שהקישור תקין."
+                    "❌ לא הצלחתי לטעון את פרטי המוצר. נסו שוב מאוחר יותר או שלחו קישור מוצר ישיר."
                 )
                 return WAITING_FOR_URL
             
