@@ -13,6 +13,7 @@ from enum import Enum
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 from config import config
 
@@ -254,66 +255,42 @@ class DatabaseManager:
     
     # Product Tracking Management
     async def add_tracking(self, tracking: ProductTracking) -> Optional[ObjectId]:
-        """Add new product tracking"""
+        """Add new product tracking atomically and return its _id (always)."""
         try:
-            # Check if tracking already exists (by URL or stable product_key)
-            url_or_key_query = {
-                'user_id': tracking.user_id,
-                '$or': [
-                    {'product_url': tracking.product_url}
-                ]
-            }
-            if tracking.product_key:
-                # Loosen store_id filter to handle legacy records
-                url_or_key_query['$or'].append({'product_key': tracking.product_key})
-
-            existing = await self.collections['trackings'].find_one(url_or_key_query)
-            if existing:
-                logger.info(
-                    f"🔁 Duplicate tracking detected for user {tracking.user_id}: "
-                    f"url={tracking.product_url}, key={tracking.product_key}, store={tracking.store_id}"
-                )
-                return existing.get('_id')
-
-            # Prepare document with timestamps and defaults
             now = datetime.utcnow()
             tracking.created_at = now
             tracking.updated_at = now
             tracking.status = TrackingStatus.ACTIVE
             doc = tracking.to_dict()
 
-            # Idempotent upsert by (user_id, product_url) to avoid DuplicateKeyError race
+            # Atomic upsert that returns the document in one round-trip
             filter_q = {'user_id': tracking.user_id, 'product_url': tracking.product_url}
-            update_q = {'$setOnInsert': doc}
-            upsert_result = await self.collections['trackings'].update_one(filter_q, update_q, upsert=True)
+            update_q = {
+                '$setOnInsert': doc
+            }
+            result = await self.collections['trackings'].find_one_and_update(
+                filter_q,
+                update_q,
+                upsert=True,
+                return_document=ReturnDocument.AFTER
+            )
 
-            if upsert_result.upserted_id:
-                # New document inserted
-                await self.collections['users'].update_one(
-                    {'user_id': tracking.user_id},
-                    {
-                        '$inc': {
-                            'total_trackings': 1,
-                            'active_trackings': 1
+            if result and result.get('_id'):
+                # If this was an insert, increment user counters (best-effort)
+                if result.get('created_at') == now:
+                    await self.collections['users'].update_one(
+                        {'user_id': tracking.user_id},
+                        {
+                            '$inc': {
+                                'total_trackings': 1,
+                                'active_trackings': 1
+                            },
+                            '$set': {'updated_at': now}
                         },
-                        '$set': {'updated_at': now}
-                    },
-                    upsert=True
-                )
-                logger.info(f"➕ Added tracking for user {tracking.user_id}: {tracking.product_name}")
-                return upsert_result.upserted_id
+                        upsert=True
+                    )
+                return result['_id']
 
-            # If matched existing (no insert), fetch and return its id
-            existing_after = await self.collections['trackings'].find_one(filter_q)
-            if existing_after:
-                return existing_after.get('_id')
-            
-            # As a last resort, try by product_key (without store filter)
-            if tracking.product_key:
-                fallback = await self.collections['trackings'].find_one({'user_id': tracking.user_id, 'product_key': tracking.product_key})
-                if fallback:
-                    return fallback.get('_id')
-            
             return None
             
         except DuplicateKeyError:
