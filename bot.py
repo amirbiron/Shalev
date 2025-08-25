@@ -309,8 +309,60 @@ class StockTrackerBot:
                     await update.message.reply_text(BOT_MESSAGES['error_occurred'])
                     return ConversationHandler.END
                 if not tracking_id:
-                    await update.message.reply_text(BOT_MESSAGES['error_occurred'])
-                    return ConversationHandler.END
+                    # Re-check for existing tracking (race/duplicate), revive if ERROR else show management
+                    logger.info(f"add_tracking returned None; re-checking existing for user={user_id} url={url} key={product_key}")
+                    query = {
+                        'user_id': user_id,
+                        '$or': [
+                            {'product_url': url}
+                        ]
+                    }
+                    if product_key:
+                        query['$or'].append({'product_key': product_key, 'store_id': store_info['store_id']})
+                    existing2 = await self.db.collections['trackings'].find_one(query)
+                    if existing2:
+                        existing_id = existing2.get('_id')
+                        existing_status = existing2.get('status', 'active')
+                        if existing_status == 'error':
+                            from datetime import datetime
+                            await self.db.collections['trackings'].update_one(
+                                {'_id': existing_id},
+                                {'$set': {
+                                    'status': 'active',
+                                    'error_count': 0,
+                                    'updated_at': datetime.utcnow(),
+                                    'product_name': product_info.name,
+                                    'notification_sent': False
+                                }}
+                            )
+                            tracking_id = existing_id  # proceed to frequency selection
+                        else:
+                            existing_id_str = str(existing_id)
+                            status_map = {
+                                'active': 'פעיל',
+                                'paused': 'מושהה',
+                                'in_stock': 'במלאי',
+                                'out_of_stock': 'אזל',
+                                'error': 'שגיאה'
+                            }
+                            keyboard_buttons = []
+                            if existing_status == 'paused':
+                                keyboard_buttons.append([InlineKeyboardButton("▶️ חידוש מעקב", callback_data=f"resume_{existing_id_str}")])
+                            else:
+                                keyboard_buttons.append([InlineKeyboardButton("⏸ השהה מעקב", callback_data=f"pause_{existing_id_str}")])
+                            keyboard_buttons.append([InlineKeyboardButton("🗑 הסר מעקב", callback_data=f"remove_{existing_id_str}")])
+
+                            await update.message.reply_text(
+                                f"✅ כבר קיים מעקב למוצר הזה.\n\n"
+                                f"📦 {existing2.get('product_name', 'מוצר')}\n"
+                                f"🏪 {existing2.get('store_name', store_info['name'])}\n"
+                                f"📊 סטטוס: {status_map.get(existing_status, existing_status)}",
+                                reply_markup=InlineKeyboardMarkup(keyboard_buttons)
+                            )
+                            return ConversationHandler.END
+                    else:
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
             
             # Create frequency selection keyboard
             keyboard = InlineKeyboardMarkup([
