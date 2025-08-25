@@ -363,6 +363,28 @@ class StockTrackerBot:
                     else:
                         await update.message.reply_text(BOT_MESSAGES['error_occurred'])
                         return ConversationHandler.END
+                else:
+                    # Final fallback: force upsert and proceed
+                    from datetime import datetime
+                    doc = tracking.to_dict()
+                    doc['created_at'] = datetime.utcnow()
+                    doc['updated_at'] = doc['created_at']
+                    filter_q = {'user_id': user_id, 'product_url': url}
+                    try:
+                        res = await self.db.collections['trackings'].update_one(filter_q, {'$setOnInsert': doc}, upsert=True)
+                        if res.upserted_id is not None:
+                            tracking_id = res.upserted_id
+                        else:
+                            exist3 = await self.db.collections['trackings'].find_one(filter_q)
+                            if exist3:
+                                tracking_id = exist3.get('_id')
+                    except Exception as e:
+                        logger.error(f"DB upsert fallback failed for user={user_id} url={url}: {e}")
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
+                    if not tracking_id:
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
             
             # Create frequency selection keyboard
             keyboard = InlineKeyboardMarkup([
