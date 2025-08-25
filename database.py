@@ -31,6 +31,7 @@ class ProductTracking:
     """Product tracking model"""
     user_id: int
     product_url: str
+    product_key: Optional[str]
     product_name: str
     store_name: str
     store_id: str
@@ -140,12 +141,14 @@ class DatabaseManager:
             await self.collections['users'].create_index('last_activity')
             
             # Trackings collection indexes
+            # Unique on (user_id, product_url) remains, but we will also de-duplicate in app by product_key
             await self.collections['trackings'].create_index([
                 ('user_id', 1), ('product_url', 1)
             ], unique=True)
             await self.collections['trackings'].create_index('status')
             await self.collections['trackings'].create_index('last_checked')
             await self.collections['trackings'].create_index('store_id')
+            await self.collections['trackings'].create_index('product_key')
             await self.collections['trackings'].create_index([
                 ('status', 1), ('last_checked', 1)
             ])
@@ -254,10 +257,17 @@ class DatabaseManager:
         """Add new product tracking"""
         try:
             # Check if tracking already exists
-            existing = await self.collections['trackings'].find_one({
+            # Try to find existing by exact URL or by stable product_key (if available)
+            url_or_key_query = {
                 'user_id': tracking.user_id,
-                'product_url': tracking.product_url
-            })
+                '$or': [
+                    {'product_url': tracking.product_url}
+                ]
+            }
+            if tracking.product_key:
+                url_or_key_query['$or'].append({'product_key': tracking.product_key})
+
+            existing = await self.collections['trackings'].find_one(url_or_key_query)
             
             if existing:
                 return None  # Already exists

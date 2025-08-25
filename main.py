@@ -164,6 +164,12 @@ async def lifespan(app: FastAPI):
 
         if db_manager:
             await db_manager.close()
+        # Ensure scraper (browser/session) is closed to avoid unclosed session errors
+        try:
+            if bot_instance and bot_instance.scraper:
+                await bot_instance.scraper.close()
+        except Exception as e:
+            logger.warning(f"Error closing scraper on shutdown: {e}")
     finally:
         logger.info("👋 Bot stopped.")
 

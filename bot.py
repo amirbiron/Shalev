@@ -234,9 +234,15 @@ class StockTrackerBot:
                 default_interval = max(config.MIN_CHECK_INTERVAL, min(config.MAX_CHECK_INTERVAL, default_interval))
 
             # Create tracking object
+            product_key = None
+            try:
+                product_key = self.scraper.get_product_key(url, store_info['store_id'])
+            except Exception:
+                product_key = None
             tracking = ProductTracking(
                 user_id=user_id,
                 product_url=url,
+                product_key=product_key,
                 product_name=product_info.name,
                 store_name=store_info['name'],
                 store_id=store_info['store_id'],

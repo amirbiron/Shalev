@@ -9,6 +9,7 @@ import re
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs
 
 import aiohttp
 import requests
@@ -53,6 +54,38 @@ class StockScraper:
         
         # Store-specific configurations
         self.store_configs = SUPPORTED_CLUBS
+
+    def get_product_key(self, url: str, store_id: str) -> Optional[str]:
+        """Return a stable product key for deduplication across URL variants.
+        Examples:
+        - meshekard/mashkar: product.aspx?ite_item=4085 → ite_item:4085
+        - corporate/shufersal4u: ?uuid=... → uuid:<UUID>
+        - generic: try numeric id in path → id:<digits>
+        """
+        try:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            host = parsed.netloc.replace('www.', '').lower()
+
+            # Common query identifiers
+            if 'ite_item' in query and query['ite_item'] and query['ite_item'][0]:
+                return f"ite_item:{query['ite_item'][0]}"
+            if 'uuid' in query and query['uuid'] and query['uuid'][0]:
+                return f"uuid:{query['uuid'][0]}"
+
+            # Mashkar canonical path id
+            if store_id == 'mashkar':
+                match = re.search(r'/product/(\d+)', parsed.path)
+                if match:
+                    return f"id:{match.group(1)}"
+
+            # Generic: last numeric segment
+            match = re.search(r'(\d+)', parsed.path)
+            if match:
+                return f"id:{match.group(1)}"
+        except Exception:
+            pass
+        return None
     
     async def __aenter__(self):
         """Async context manager entry"""
