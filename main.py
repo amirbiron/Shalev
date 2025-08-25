@@ -36,6 +36,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+DEPLOY_SHA = os.getenv('DEPLOY_SHA', '')
+if DEPLOY_SHA:
+    logger.info(f"🧩 Deploy SHA: {DEPLOY_SHA}")
 
 # Global variables for bot and database
 bot_instance: Optional[StockTrackerBot] = None
@@ -290,6 +293,10 @@ async def get_stats():
     except Exception as e:
         logger.error(f"Stats error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/version")
+async def version():
+    return {"sha": DEPLOY_SHA or "unknown"}
 
 
 def signal_handler(signum, frame):
