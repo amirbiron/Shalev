@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
             read_timeout=30,
             write_timeout=30,
             pool_timeout=10,
-            http2=False,
+            http_version="1.1",
         )
         telegram_app = (
             Application.builder()
