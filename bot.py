@@ -138,6 +138,7 @@ class StockTrackerBot:
         application.add_handler(CallbackQueryHandler(self.handle_remove_tracking, pattern=r"^remove_"))
         application.add_handler(CallbackQueryHandler(self.handle_pause_tracking, pattern=r"^pause_"))
         application.add_handler(CallbackQueryHandler(self.handle_resume_tracking, pattern=r"^resume_"))
+        application.add_handler(CallbackQueryHandler(self.handle_rename_tracking, pattern=r"^rename_"))
         application.add_handler(CallbackQueryHandler(self.handle_settings, pattern=r"^settings_"))
         
         # Generic message handler (for URLs)
@@ -719,6 +720,21 @@ class StockTrackerBot:
                 
         except Exception as e:
             logger.error(f"❌ Error in generic message handler: {e}")
+
+    async def handle_rename_tracking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Initiate manual rename flow via button"""
+        try:
+            query = update.callback_query
+            await query.answer()
+            parts = query.data.split('_')
+            if len(parts) != 2:
+                return
+            tracking_id = parts[1]
+            context.user_data['awaiting_rename_id'] = tracking_id
+            await query.edit_message_text(
+                "✍️ שלחו עכשיו את השם המדויק למוצר, ואני אעדכן אותו במעקב.")
+        except Exception as e:
+            logger.error(f"❌ Error in handle_rename_tracking: {e}")
     
     async def cancel_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Cancel current conversation"""
