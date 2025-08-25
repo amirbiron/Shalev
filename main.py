@@ -19,6 +19,7 @@ import uvicorn
 from telegram import Bot
 from telegram.ext import Application, ContextTypes
 from telegram.request import HTTPXRequest
+from telegram.error import NetworkError as TgNetworkError
 
 # Local imports
 from config import config, BOT_MESSAGES
@@ -60,10 +61,10 @@ async def lifespan(app: FastAPI):
         
         # Create Telegram application with robust HTTP client (timeouts, no HTTP/2)
         request = HTTPXRequest(
-            connect_timeout=10,
-            read_timeout=30,
+            connect_timeout=20,
+            read_timeout=90,
             write_timeout=30,
-            pool_timeout=10,
+            pool_timeout=20,
             http_version="1.1",
         )
         telegram_app = (
@@ -78,6 +79,10 @@ async def lifespan(app: FastAPI):
 
         # Global error handler for better diagnostics of transient network errors
         async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
+            # Downgrade noisy network read errors to warnings; keep others as exceptions
+            if isinstance(context.error, TgNetworkError):
+                logger.warning(f"Transient Telegram network error: {context.error}")
+                return
             logger.exception("Unhandled error", exc_info=context.error)
         telegram_app.add_error_handler(on_error)
         
@@ -96,8 +101,14 @@ async def lifespan(app: FastAPI):
             logger.info("🔄 Starting polling mode...")
             await telegram_app.initialize()
             await telegram_app.start()
-            # Start polling in background
-            asyncio.create_task(telegram_app.updater.start_polling())
+            # Start polling in background with explicit long-poll timeout and no backlog
+            asyncio.create_task(
+                telegram_app.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=['message', 'callback_query'],
+                    timeout=60
+                )
+            )
         
         # Start the scheduler
         logger.info("⏰ Starting stock check scheduler...")
