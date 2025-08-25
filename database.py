@@ -32,17 +32,17 @@ class ProductTracking:
     """Product tracking model"""
     user_id: int
     product_url: str
-    # Optional: canonical URL without option augmentation (for display/back-compat)
-    original_url: Optional[str] = None
     product_name: str
     store_name: str
     store_id: str
+    check_interval: int  # minutes
+    status: TrackingStatus
+    # Optional: canonical URL without option augmentation (for display/back-compat)
+    original_url: Optional[str] = None
     # Optional selected option/deal to track (e.g., "20%", "דיל 85₪")
     option_label: Optional[str] = None
     # Normalized key for the selected option (used for dedup/uniqueness)
     option_key: Optional[str] = None
-    check_interval: int  # minutes
-    status: TrackingStatus
     last_checked: Optional[datetime] = None
     last_status_change: Optional[datetime] = None
     created_at: Optional[datetime] = None
