@@ -416,6 +416,18 @@ class StockScraper:
                     api_name = await self._fetch_mashkar_product_name_api(pid)
                     if api_name:
                         product_name = api_name
+                # Popup HTML fallback via HTTP (safe, no navigation changes)
+                if self._is_invalid_product_name(product_name, store_config):
+                    try:
+                        from urllib.parse import urlparse, parse_qs
+                        parsed = urlparse(url)
+                        q = parse_qs(parsed.query)
+                        if 'ite_item' in q and q['ite_item'] and q['ite_item'][0]:
+                            popup_name = await self._fetch_mashkar_popup_name(q['ite_item'][0], store_config)
+                            if popup_name:
+                                product_name = popup_name
+                    except Exception:
+                        pass
 
             # Price (best-effort)
             price = None
@@ -673,6 +685,41 @@ class StockScraper:
                                 for key in ['name', 'title', 'productName', 'ItemName', 'itemName']:
                                     if key in inner and isinstance(inner[key], str) and inner[key].strip():
                                         return inner[key].strip()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    async def _fetch_mashkar_popup_name(self, item_id: str, store_config: Dict[str, Any]) -> Optional[str]:
+        """Fetch and parse the Mashkar popup HTML to extract the product name."""
+        try:
+            if not self.session:
+                await self.init_session()
+            headers = dict(self.headers)
+            if 'headers' in store_config:
+                headers.update(store_config['headers'])
+            popup_hosts = [
+                'meshekard.co.il', 'www.meshekard.co.il',
+                'mashkarcard.co.il', 'www.mashkarcard.co.il'
+            ]
+            for host in popup_hosts:
+                url = f"https://{host}/index_popup_meshek.aspx?ite_item={item_id}"
+                try:
+                    timeout = aiohttp.ClientTimeout(total=8)
+                    async with self.session.get(url, headers=headers, timeout=timeout) as resp:
+                        if resp.status != 200:
+                            continue
+                        html = await resp.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        selectors = store_config.get('name_selectors', []) or []
+                        generic = ['#hdTitle', '#itemTitle', '[id*="lblTitle"]', '[id*="lblItem"]', '.product-title', '.item-title', 'h1']
+                        for sel in selectors + [s for s in generic if s not in selectors]:
+                            el = soup.select_one(sel)
+                            if el and el.get_text(strip=True):
+                                name = el.get_text(strip=True)
+                                if name and name not in {store_config.get('name', '').strip()}:
+                                    return name
                 except Exception:
                     continue
         except Exception:
