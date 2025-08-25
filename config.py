@@ -144,7 +144,7 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
         'base_url': 'https://www.shufersal4u.co.il',
         'stock_selector': '.product-availability',
         'out_of_stock_indicators': ['אזל', 'לא זמין', 'זמנית לא זמין'],
-        'requires_js': False
+        'requires_js': True
     }
 }
 
