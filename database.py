@@ -265,12 +265,16 @@ class DatabaseManager:
                 ]
             }
             if tracking.product_key:
-                url_or_key_query['$or'].append({'product_key': tracking.product_key})
+                url_or_key_query['$or'].append({'product_key': tracking.product_key, 'store_id': tracking.store_id})
 
             existing = await self.collections['trackings'].find_one(url_or_key_query)
-            
             if existing:
+                logger.info(
+                    f"🔁 Duplicate tracking prevented for user {tracking.user_id}: "
+                    f"url={tracking.product_url}, key={tracking.product_key}, store={tracking.store_id}"
+                )
                 return None  # Already exists
+            
             
             # Set timestamps
             now = datetime.utcnow()
