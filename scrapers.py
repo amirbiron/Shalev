@@ -290,6 +290,8 @@ class StockScraper:
             selectors = store_config.get('name_selectors', []) or []
             generic_selectors = [
                 '#hdTitle', '#itemTitle', '[id*="lblTitle"]', '[id*="lblItem"]',
+                'input#hdTitle', 'input[id*="hdTitle"]', 'input[name*="hdTitle"]',
+                'input[id*="ItemName"]', 'input[name*="ItemName"]',
                 '.product-title', '.product-name', '.item-title', 'h1'
             ]
             name_selectors = selectors + [s for s in generic_selectors if s not in selectors]
@@ -299,9 +301,30 @@ class StockScraper:
                 try:
                     element = await page.wait_for_selector(selector, timeout=1500)
                     if element:
-                        text = (await element.inner_text()).strip()
-                        if text:
-                            product_name = text
+                        candidate = None
+                        try:
+                            val = await element.get_attribute('value')
+                        except Exception:
+                            val = None
+                        if val and val.strip():
+                            candidate = val.strip()
+                        else:
+                            try:
+                                txt = await element.inner_text()
+                                txt = (txt or '').strip()
+                            except Exception:
+                                txt = ''
+                            if txt:
+                                candidate = txt
+                        if not candidate:
+                            try:
+                                title_attr = await element.get_attribute('title')
+                            except Exception:
+                                title_attr = None
+                            if title_attr and title_attr.strip():
+                                candidate = title_attr.strip()
+                        if candidate:
+                            product_name = candidate
                             break
                 except Exception:
                     continue
@@ -314,9 +337,30 @@ class StockScraper:
                             try:
                                 element = await frame.wait_for_selector(selector, timeout=1500)
                                 if element:
-                                    text = (await element.inner_text()).strip()
-                                    if text:
-                                        product_name = text
+                                    candidate = None
+                                    try:
+                                        val = await element.get_attribute('value')
+                                    except Exception:
+                                        val = None
+                                    if val and val.strip():
+                                        candidate = val.strip()
+                                    else:
+                                        try:
+                                            txt = await element.inner_text()
+                                            txt = (txt or '').strip()
+                                        except Exception:
+                                            txt = ''
+                                        if txt:
+                                            candidate = txt
+                                    if not candidate:
+                                        try:
+                                            title_attr = await element.get_attribute('title')
+                                        except Exception:
+                                            title_attr = None
+                                        if title_attr and title_attr.strip():
+                                            candidate = title_attr.strip()
+                                    if candidate:
+                                        product_name = candidate
                                         raise StopIteration
                             except Exception:
                                 continue
