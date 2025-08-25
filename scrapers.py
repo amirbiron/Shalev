@@ -197,6 +197,92 @@ class StockScraper:
         except Exception as e:
             logger.error(f"❌ Error checking stock status for {url}: {e}")
             return None
+
+    async def get_purchase_options(self, url: str, store_id: str) -> List[Dict[str, str]]:
+        """Extract a list of purchasable options/variants/deals on the product page.
+        Returns a list of dicts with at least 'label' and 'key' fields.
+        Best-effort across stores; safe no-op if not found.
+        """
+        options: List[Dict[str, str]] = []
+        try:
+            store_config = self.store_configs.get(store_id) or {}
+            requires_js = store_config.get('requires_js', False)
+            if requires_js and not self.browser:
+                await self.init_browser()
+            if not requires_js and not self.session:
+                await self.init_session()
+
+            # Heuristics for common option blocks
+            selectors = [
+                'select[name*="variant"], select[name*="option"], select[name*="deal"]',
+                '.variants select, .options select',
+                '.variant, .option, [data-variant], [data-option]'
+            ]
+
+            if requires_js:
+                page = await self.browser.new_page()
+                try:
+                    await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                    await asyncio.sleep(1)
+                    # Try selects first
+                    for sel in selectors[:2]:
+                        nodes = await page.query_selector_all(sel)
+                        for node in nodes:
+                            try:
+                                tag = (await node.evaluate('(el) => el.tagName')).lower()
+                            except Exception:
+                                tag = ''
+                            if tag == 'select':
+                                opts = await node.query_selector_all('option')
+                                for op in opts:
+                                    txt = (await op.inner_text() or '').strip()
+                                    if txt:
+                                        key = re.sub(r"\s+", " ", txt).strip().lower()
+                                        options.append({'label': txt, 'key': key})
+                    # Generic labeled option items
+                    if not options:
+                        nodes = await page.query_selector_all(selectors[2])
+                        for node in nodes[:20]:
+                            txt = (await node.inner_text() or '').strip()
+                            if txt and any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה']):
+                                key = re.sub(r"\s+", " ", txt).strip().lower()
+                                options.append({'label': txt, 'key': key})
+                finally:
+                    await page.close()
+            else:
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return []
+                    html = await resp.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                # Select based
+                for sel in selectors[:2]:
+                    for select in soup.select(sel):
+                        for op in select.select('option'):
+                            txt = op.get_text(strip=True)
+                            if txt:
+                                key = re.sub(r"\s+", " ", txt).strip().lower()
+                                options.append({'label': txt, 'key': key})
+                if not options:
+                    for node in soup.select(selectors[2])[:20]:
+                        txt = node.get_text(strip=True)
+                        if txt and (any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה'])):
+                            key = re.sub(r"\s+", " ", txt).strip().lower()
+                            options.append({'label': txt, 'key': key})
+        except Exception:
+            return options
+        # Deduplicate by key
+        seen = set()
+        unique: List[Dict[str, str]] = []
+        for opt in options:
+            k = opt.get('key') or opt.get('label')
+            if not k:
+                continue
+            if k in seen:
+                continue
+            seen.add(k)
+            unique.append(opt)
+        return unique
     
     async def _scrape_with_playwright(self, url: str, store_config: Dict[str, Any]) -> ProductInfo:
         if not self.browser:
