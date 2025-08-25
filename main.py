@@ -12,7 +12,7 @@ from typing import Optional
 
 # FastAPI for health check (Render requirement)
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import uvicorn
 
 # Telegram Bot
@@ -185,10 +185,20 @@ async def root():
         "environment": config.ENVIRONMENT
     }
 
+@app.head("/")
+async def root_head():
+    """HEAD support for uptime monitors"""
+    return Response(status_code=200)
+
 @app.get("/uptime")
 async def uptime():
     """Simple liveness probe that always returns 200 OK"""
     return {"status": "ok"}
+
+@app.head("/uptime")
+async def uptime_head():
+    """HEAD support for uptime monitors"""
+    return Response(status_code=200)
 
 @app.get("/health")
 async def health_check():
