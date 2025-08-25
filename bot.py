@@ -218,10 +218,16 @@ class StockTrackerBot:
                 return WAITING_FOR_URL
             
             # Get product info from scraper
+            logger.info(f"URL received: {url} | store={store_info['store_id']}")
             product_info = await self.scraper.get_product_info(url, store_info['store_id'])
-            if not product_info:
+            if (
+                not product_info or
+                getattr(product_info, 'error_message', None) or
+                product_info.name in {"שגיאה בטעינת המוצר", "שגיאת זמן קצוב", "שגיאה"}
+            ):
+                logger.warning(f"Product info load failure for {url} | store={store_info['store_id']} | error={getattr(product_info, 'error_message', None)}")
                 await update.message.reply_text(
-                    "❌ לא הצלחתי לטעון את פרטי המוצר. אנא בדקו שהקישור תקין."
+                    "❌ לא הצלחתי לטעון את פרטי המוצר. נסו שוב מאוחר יותר או שלחו קישור מוצר ישיר."
                 )
                 return WAITING_FOR_URL
             
@@ -233,22 +239,152 @@ class StockTrackerBot:
                 # Clamp to configured min/max
                 default_interval = max(config.MIN_CHECK_INTERVAL, min(config.MAX_CHECK_INTERVAL, default_interval))
 
-            # Create tracking object
-            tracking = ProductTracking(
-                user_id=user_id,
-                product_url=url,
-                product_name=product_info.name,
-                store_name=store_info['name'],
-                store_id=store_info['store_id'],
-                check_interval=default_interval,
-                status=TrackingStatus.ACTIVE
-            )
-            
-            # Add to database
-            tracking_id = await self.db.add_tracking(tracking)
-            if not tracking_id:
-                await update.message.reply_text(BOT_MESSAGES['already_tracking'])
+            # Derive stable product key for deduplication
+            try:
+                product_key = self.scraper.get_product_key(url, store_info['store_id'])
+            except Exception:
+                product_key = None
+
+            # Check for existing tracking by URL or product_key
+            or_conditions = [{'product_url': url}]
+            if product_key:
+                or_conditions.append({'product_key': product_key, 'store_id': store_info['store_id']})
+            existing = await self.db.collections['trackings'].find_one({'user_id': user_id, '$or': or_conditions})
+            logger.info(f"Dedup check for user={user_id} url={url} key={product_key} -> existing={bool(existing)}")
+
+            if existing and existing.get('status') == 'error':
+                # Revive ERROR tracking
+                await self.db.collections['trackings'].update_one(
+                    {'_id': existing['_id']},
+                    {'$set': {
+                        'status': 'active',
+                        'error_count': 0,
+                        'updated_at': datetime.utcnow(),
+                        'product_name': product_info.name,
+                        'notification_sent': False
+                    }}
+                )
+                tracking_id = existing['_id']
+            elif existing:
+                existing_id = str(existing.get('_id'))
+                existing_status = existing.get('status', 'active')
+                status_map = {
+                    'active': 'פעיל',
+                    'paused': 'מושהה',
+                    'in_stock': 'במלאי',
+                    'out_of_stock': 'אזל',
+                    'error': 'שגיאה'
+                }
+                keyboard_buttons = []
+                if existing_status == 'paused':
+                    keyboard_buttons.append([InlineKeyboardButton("▶️ חידוש מעקב", callback_data=f"resume_{existing_id}")])
+                else:
+                    keyboard_buttons.append([InlineKeyboardButton("⏸ השהה מעקב", callback_data=f"pause_{existing_id}")])
+                keyboard_buttons.append([InlineKeyboardButton("🗑 הסר מעקב", callback_data=f"remove_{existing_id}")])
+
+                await update.message.reply_text(
+                    f"✅ כבר קיים מעקב למוצר הזה.\n\n"
+                    f"📦 {existing.get('product_name', 'מוצר')}\n"
+                    f"🏪 {existing.get('store_name', store_info['name'])}\n"
+                    f"📊 סטטוס: {status_map.get(existing_status, existing_status)}",
+                    reply_markup=InlineKeyboardMarkup(keyboard_buttons)
+                )
                 return ConversationHandler.END
+            else:
+                # Create tracking object and insert
+                tracking = ProductTracking(
+                    user_id=user_id,
+                    product_url=url,
+                    product_key=product_key,
+                    product_name=product_info.name,
+                    store_name=store_info['name'],
+                    store_id=store_info['store_id'],
+                    check_interval=default_interval,
+                    status=TrackingStatus.ACTIVE
+                )
+                try:
+                    tracking_id = await self.db.add_tracking(tracking)
+                except Exception as e:
+                    logger.error(f"DB add_tracking failed for user={user_id} url={url}: {e}")
+                    await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                    return ConversationHandler.END
+                if not tracking_id:
+                    # Re-check for existing tracking (race/duplicate), revive if ERROR else show management
+                    logger.info(f"add_tracking returned None; re-checking existing for user={user_id} url={url} key={product_key}")
+                    query = {
+                        'user_id': user_id,
+                        '$or': [
+                            {'product_url': url}
+                        ]
+                    }
+                    if product_key:
+                        query['$or'].append({'product_key': product_key, 'store_id': store_info['store_id']})
+                    existing2 = await self.db.collections['trackings'].find_one(query)
+                    if existing2:
+                        existing_id = existing2.get('_id')
+                        existing_status = existing2.get('status', 'active')
+                        if existing_status == 'error':
+                            from datetime import datetime
+                            await self.db.collections['trackings'].update_one(
+                                {'_id': existing_id},
+                                {'$set': {
+                                    'status': 'active',
+                                    'error_count': 0,
+                                    'updated_at': datetime.utcnow(),
+                                    'product_name': product_info.name,
+                                    'notification_sent': False
+                                }}
+                            )
+                            tracking_id = existing_id  # proceed to frequency selection
+                        else:
+                            existing_id_str = str(existing_id)
+                            status_map = {
+                                'active': 'פעיל',
+                                'paused': 'מושהה',
+                                'in_stock': 'במלאי',
+                                'out_of_stock': 'אזל',
+                                'error': 'שגיאה'
+                            }
+                            keyboard_buttons = []
+                            if existing_status == 'paused':
+                                keyboard_buttons.append([InlineKeyboardButton("▶️ חידוש מעקב", callback_data=f"resume_{existing_id_str}")])
+                            else:
+                                keyboard_buttons.append([InlineKeyboardButton("⏸ השהה מעקב", callback_data=f"pause_{existing_id_str}")])
+                            keyboard_buttons.append([InlineKeyboardButton("🗑 הסר מעקב", callback_data=f"remove_{existing_id_str}")])
+
+                            await update.message.reply_text(
+                                f"✅ כבר קיים מעקב למוצר הזה.\n\n"
+                                f"📦 {existing2.get('product_name', 'מוצר')}\n"
+                                f"🏪 {existing2.get('store_name', store_info['name'])}\n"
+                                f"📊 סטטוס: {status_map.get(existing_status, existing_status)}",
+                                reply_markup=InlineKeyboardMarkup(keyboard_buttons)
+                            )
+                            return ConversationHandler.END
+                    else:
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
+                else:
+                    # Final fallback: force upsert and proceed
+                    from datetime import datetime
+                    doc = tracking.to_dict()
+                    doc['created_at'] = datetime.utcnow()
+                    doc['updated_at'] = doc['created_at']
+                    filter_q = {'user_id': user_id, 'product_url': url}
+                    try:
+                        res = await self.db.collections['trackings'].update_one(filter_q, {'$setOnInsert': doc}, upsert=True)
+                        if res.upserted_id is not None:
+                            tracking_id = res.upserted_id
+                        else:
+                            exist3 = await self.db.collections['trackings'].find_one(filter_q)
+                            if exist3:
+                                tracking_id = exist3.get('_id')
+                    except Exception as e:
+                        logger.error(f"DB upsert fallback failed for user={user_id} url={url}: {e}")
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
+                    if not tracking_id:
+                        await update.message.reply_text(BOT_MESSAGES['error_occurred'])
+                        return ConversationHandler.END
             
             # Create frequency selection keyboard
             keyboard = InlineKeyboardMarkup([

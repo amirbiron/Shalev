@@ -13,6 +13,7 @@ from enum import Enum
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 from config import config
 
@@ -42,6 +43,7 @@ class ProductTracking:
     updated_at: Optional[datetime] = None
     error_count: int = 0
     notification_sent: bool = False
+    product_key: Optional[str] = None
     _id: Optional[ObjectId] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -140,12 +142,14 @@ class DatabaseManager:
             await self.collections['users'].create_index('last_activity')
             
             # Trackings collection indexes
+            # Unique on (user_id, product_url) remains, but we will also de-duplicate in app by product_key
             await self.collections['trackings'].create_index([
                 ('user_id', 1), ('product_url', 1)
             ], unique=True)
             await self.collections['trackings'].create_index('status')
             await self.collections['trackings'].create_index('last_checked')
             await self.collections['trackings'].create_index('store_id')
+            await self.collections['trackings'].create_index('product_key')
             await self.collections['trackings'].create_index([
                 ('status', 1), ('last_checked', 1)
             ])
@@ -251,42 +255,63 @@ class DatabaseManager:
     
     # Product Tracking Management
     async def add_tracking(self, tracking: ProductTracking) -> Optional[ObjectId]:
-        """Add new product tracking"""
+        """Add new product tracking atomically and return its _id (always)."""
         try:
-            # Check if tracking already exists
-            existing = await self.collections['trackings'].find_one({
-                'user_id': tracking.user_id,
-                'product_url': tracking.product_url
-            })
-            
-            if existing:
-                return None  # Already exists
-            
-            # Set timestamps
             now = datetime.utcnow()
             tracking.created_at = now
             tracking.updated_at = now
             tracking.status = TrackingStatus.ACTIVE
-            
-            # Insert tracking
-            result = await self.collections['trackings'].insert_one(tracking.to_dict())
-            
-            # Update user stats
-            await self.collections['users'].update_one(
-                {'user_id': tracking.user_id},
-                {
-                    '$inc': {
-                        'total_trackings': 1,
-                        'active_trackings': 1
-                    },
-                    '$set': {'updated_at': now}
-                }
+            doc = tracking.to_dict()
+            # Ensure MongoDB generates a proper ObjectId
+            if doc.get('_id') is None:
+                doc.pop('_id', None)
+
+            # Atomic upsert that returns the document in one round-trip
+            filter_q = {'user_id': tracking.user_id, 'product_url': tracking.product_url}
+            update_q = {
+                '$setOnInsert': doc
+            }
+            result = await self.collections['trackings'].find_one_and_update(
+                filter_q,
+                update_q,
+                upsert=True,
+                return_document=ReturnDocument.AFTER
             )
-            
-            logger.info(f"➕ Added tracking for user {tracking.user_id}: {tracking.product_name}")
-            return result.inserted_id
+
+            if result and result.get('_id'):
+                # If this was an insert, increment user counters (best-effort)
+                if result.get('created_at') == now:
+                    await self.collections['users'].update_one(
+                        {'user_id': tracking.user_id},
+                        {
+                            '$inc': {
+                                'total_trackings': 1,
+                                'active_trackings': 1
+                            },
+                            '$set': {'updated_at': now}
+                        },
+                        upsert=True
+                    )
+                return result['_id']
+
+            return None
             
         except DuplicateKeyError:
+            # Return existing id on duplicate
+            existing = await self.collections['trackings'].find_one({
+                'user_id': tracking.user_id,
+                'product_url': tracking.product_url
+            })
+            if existing:
+                return existing.get('_id')
+            elif tracking.product_key:
+                existing = await self.collections['trackings'].find_one({
+                    'user_id': tracking.user_id,
+                    'product_key': tracking.product_key,
+                    'store_id': tracking.store_id
+                })
+                if existing:
+                    return existing.get('_id')
             return None
         except Exception as e:
             logger.error(f"❌ Error adding tracking: {e}")
@@ -306,6 +331,7 @@ class DatabaseManager:
                 tracking = ProductTracking(
                     user_id=doc['user_id'],
                     product_url=doc['product_url'],
+                    product_key=doc.get('product_key'),
                     product_name=doc['product_name'],
                     store_name=doc['store_name'],
                     store_id=doc['store_id'],

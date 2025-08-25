@@ -44,6 +44,9 @@ class BotConfig:
     ENVIRONMENT: str = os.getenv('ENVIRONMENT', 'development')
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
     
+    # Runtime toggles
+    FORCE_POLLING: bool = os.getenv('FORCE_POLLING', 'False').lower() == 'true'
+    
     # Logging
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
     LOG_FORMAT: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -53,18 +56,24 @@ class BotConfig:
         if not self.TELEGRAM_TOKEN:
             raise ValueError("TELEGRAM_TOKEN is required")
         
-        if self.ENVIRONMENT == 'production' and not self.WEBHOOK_URL:
-            raise ValueError("WEBHOOK_URL is required in production")
+        # In production, WEBHOOK_URL is required unless FORCE_POLLING is enabled
+        if self.ENVIRONMENT == 'production' and not self.WEBHOOK_URL and not self.FORCE_POLLING:
+            raise ValueError("WEBHOOK_URL is required in production (unless FORCE_POLLING=true)")
 
 # Supported clubs/stores configuration
 SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'mashkar': {
         'name': 'משקארד',
         'base_url': 'https://www.mashkarcard.co.il',
-        'stock_selector': '.product-stock-status',
-        'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין'],
+        'domains': ['meshekard.co.il', 'mashkarcard.co.il'],
+        'stock_selector': '.product-stock-status, .availability, .stock, .in-stock, .out-of-stock',
+        'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין', 'אזל', 'זמנית לא זמין'],
         'requires_js': True,
-        'headers': {'User-Agent': 'Mozilla/5.0 (compatible; StockTracker/1.0)'}
+        'headers': {
+            'User-Agent': 'Mozilla/5.0 (compatible; StockTracker/1.0)',
+            # Avoid brotli to prevent decode issues with some environments
+            'Accept-Encoding': 'gzip, deflate'
+        }
     },
     'hot': {
         'name': 'מועדון הוט',
@@ -76,6 +85,7 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'corporate': {
         'name': 'Corporate',
         'base_url': 'https://www.corporate.co.il',
+        'domains': ['mycorporate.co.il'],
         'stock_selector': '.stock-status',
         'out_of_stock_indicators': ['אזל מהמלאי', 'Out of Stock'],
         'requires_js': True
@@ -136,6 +146,13 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
         'stock_selector': '.availability',
         'out_of_stock_indicators': ['אזל מהמלאי', 'Out of Stock'],
         'requires_js': False
+    },
+    'shufersal4u': {
+        'name': 'שופרסל 4U',
+        'base_url': 'https://www.shufersal4u.co.il',
+        'stock_selector': '.product-availability',
+        'out_of_stock_indicators': ['אזל', 'לא זמין', 'זמנית לא זמין'],
+        'requires_js': True
     }
 }
 

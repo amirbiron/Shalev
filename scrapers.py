@@ -9,11 +9,13 @@ import re
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs
 
 import aiohttp
 import requests
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
+
 
 from config import config, SUPPORTED_CLUBS
 
@@ -53,6 +55,38 @@ class StockScraper:
         
         # Store-specific configurations
         self.store_configs = SUPPORTED_CLUBS
+
+    def get_product_key(self, url: str, store_id: str) -> Optional[str]:
+        """Return a stable product key for deduplication across URL variants.
+        Examples:
+        - meshekard/mashkar: product.aspx?ite_item=4085 → ite_item:4085
+        - corporate/shufersal4u: ?uuid=... → uuid:<UUID>
+        - generic: try numeric id in path → id:<digits>
+        """
+        try:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            host = parsed.netloc.replace('www.', '').lower()
+
+            # Common query identifiers
+            if 'ite_item' in query and query['ite_item'] and query['ite_item'][0]:
+                return f"ite_item:{query['ite_item'][0]}"
+            if 'uuid' in query and query['uuid'] and query['uuid'][0]:
+                return f"uuid:{query['uuid'][0]}"
+
+            # Mashkar canonical path id
+            if store_id == 'mashkar':
+                match = re.search(r'/product/(\d+)', parsed.path)
+                if match:
+                    return f"id:{match.group(1)}"
+
+            # Generic: last numeric segment
+            match = re.search(r'(\d+)', parsed.path)
+            if match:
+                return f"id:{match.group(1)}"
+        except Exception:
+            pass
+        return None
     
     async def __aenter__(self):
         """Async context manager entry"""
@@ -132,11 +166,46 @@ class StockScraper:
             
             logger.info(f"🔍 Getting product info from {store_config['name']}: {url}")
             
-            # Choose scraping strategy based on store requirements
-            if store_config.get('requires_js', False):
-                return await self._scrape_with_playwright(url, store_config)
+            # Prefer lightweight HTTP; fallback to Playwright if needed or required
+            requires_js = store_config.get('requires_js', False)
+
+            # First attempt
+            first_result: Optional[ProductInfo] = None
+            first_error: Optional[Exception] = None
+            if not requires_js:
+                try:
+                    first_result = await self._scrape_with_http(url, store_config)
+                except Exception as e:
+                    first_error = e
             else:
-                return await self._scrape_with_http(url, store_config)
+                try:
+                    first_result = await self._scrape_with_playwright(url, store_config)
+                except Exception as e:
+                    first_error = e
+
+            # If first attempt succeeded with meaningful data, return it
+            if first_result and not first_result.error_message and (first_result.name and first_result.name != "לא זמין"):
+                return first_result
+
+            # Fallback attempt (swap strategy)
+            try:
+                if requires_js:
+                    # JS required failed or incomplete → try HTTP as fallback
+                    return await self._scrape_with_http(url, store_config)
+                else:
+                    # HTTP failed or incomplete → try Playwright once
+                    return await self._scrape_with_playwright(url, store_config)
+            except Exception as e:
+                logger.error(f"❌ Fallback scraping error: {e}")
+                # Return structured error
+                return ProductInfo(
+                    name="שגיאה בטעינת המוצר",
+                    price=None,
+                    in_stock=False,
+                    stock_text="שגיאה",
+                    last_checked="",
+                    error_message=str(first_error or e)
+                )
                 
         except Exception as e:
             logger.error(f"❌ Error getting product info from {url}: {e}")
@@ -168,19 +237,37 @@ class StockScraper:
     
     async def _scrape_with_playwright(self, url: str, store_config: Dict[str, Any]) -> ProductInfo:
         """Scrape using Playwright for JavaScript-heavy sites"""
+        # Ensure browser exists; if closed, re-init
         if not self.browser:
             await self.init_browser()
         
         page = None
         try:
-            page = await self.browser.new_page()
+            try:
+                page = await self.browser.new_page()
+            except Exception as e:
+                # Attempt one re-init if browser/page was closed
+                if 'has been closed' in str(e).lower() or 'target page' in str(e).lower():
+                    logger.warning("🔁 Browser was closed; reinitializing and retrying once...")
+                    await self.init_browser()
+                    page = await self.browser.new_page()
+                else:
+                    raise
             
             # Set additional headers if specified
             if 'headers' in store_config:
                 await page.set_extra_http_headers(store_config['headers'])
             
             # Navigate to page with timeout
+            # Ensure we arrive at the meshekard popup if needed
             await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            try:
+                # meshekard redirects product.aspx?ite_item=... to index_popup_meshek.aspx
+                if 'meshekard.co.il' in url:
+                    # small wait for redirect chain and popup content
+                    await asyncio.sleep(1000/1000)
+            except Exception:
+                pass
             
             # Wait for content to load (store-specific)
             await asyncio.sleep(2)
@@ -218,20 +305,52 @@ class StockScraper:
             if 'headers' in store_config:
                 headers.update(store_config['headers'])
             
+            # Ensure a realistic Referer for sites that require it
+            parsed = urlparse(url)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            headers.setdefault('Referer', origin)
+            
             # Make request
-            async with self.session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    logger.warning(f"⚠️ HTTP {response.status} for {url}")
-                    return ProductInfo(
-                        name=f"שגיאת HTTP {response.status}",
-                        price=None,
-                        in_stock=False,
-                        stock_text=f"HTTP {response.status}",
-                        last_checked="",
-                        error_message=f"HTTP {response.status}"
-                    )
-                
-                html = await response.text()
+            try:
+                async with self.session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        logger.warning(f"⚠️ HTTP {response.status} for {url}")
+                        # Try preflight + retry once
+                        async with self.session.get(origin, headers=headers) as _:
+                            pass
+                        async with self.session.get(url, headers=headers) as retry_resp:
+                            if retry_resp.status != 200:
+                                return ProductInfo(
+                                    name=f"שגיאת HTTP {retry_resp.status}",
+                                    price=None,
+                                    in_stock=False,
+                                    stock_text=f"HTTP {retry_resp.status}",
+                                    last_checked="",
+                                    error_message=f"HTTP {retry_resp.status}"
+                                )
+                            html = await retry_resp.text()
+                    else:
+                        html = await response.text()
+            except Exception as e:
+                # Preflight then retry once on network-level errors
+                logger.warning(f"🌐 HTTP error for {url}: {e}. Retrying after preflight...")
+                try:
+                    async with self.session.get(origin, headers=headers) as _:
+                        pass
+                    async with self.session.get(url, headers=headers) as retry_resp:
+                        if retry_resp.status != 200:
+                            return ProductInfo(
+                                name=f"שגיאת HTTP {retry_resp.status}",
+                                price=None,
+                                in_stock=False,
+                                stock_text=f"HTTP {retry_resp.status}",
+                                last_checked="",
+                                error_message=f"HTTP {retry_resp.status}"
+                            )
+                        html = await retry_resp.text()
+                except Exception as e2:
+                    logger.error(f"❌ HTTP scraping error after retry: {e2}")
+                    raise
                 
             # Parse with BeautifulSoup
             soup = BeautifulSoup(html, 'html.parser')
@@ -438,7 +557,15 @@ class StockScraper:
         
         page = None
         try:
-            page = await self.browser.new_page()
+            try:
+                page = await self.browser.new_page()
+            except Exception as e:
+                if 'has been closed' in str(e).lower() or 'target page' in str(e).lower():
+                    logger.warning("🔁 Browser was closed during quick check; reinitializing...")
+                    await self.init_browser()
+                    page = await self.browser.new_page()
+                else:
+                    raise
             
             # Navigate with shorter timeout
             await page.goto(url, wait_until='domcontentloaded', timeout=15000)
