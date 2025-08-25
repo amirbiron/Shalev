@@ -375,25 +375,65 @@ class StockScraper:
     async def _extract_product_info_playwright(self, page: Page, store_config: Dict[str, Any]) -> ProductInfo:
         """Extract product info from Playwright page"""
         try:
-            # Product name
-            name_selectors = [
+            # Product name (store-specific first, then generic; also try frames/title/meta)
+            product_name = "לא זמין"
+            selectors = store_config.get('name_selectors', []) or []
+            generic_selectors = [
                 'h1',
                 '.product-title',
                 '.product-name',
                 '[data-testid="product-title"]',
                 '.item-title'
             ]
-            
-            product_name = "לא זמין"
+            name_selectors = selectors + [s for s in generic_selectors if s not in selectors]
+
+            # Try main page selectors
             for selector in name_selectors:
                 try:
-                    element = await page.wait_for_selector(selector, timeout=5000)
+                    element = await page.query_selector(selector)
                     if element:
-                        product_name = (await element.inner_text()).strip()
-                        if product_name:
+                        text = (await element.inner_text()).strip()
+                        if text:
+                            product_name = text
                             break
-                except:
+                except Exception:
                     continue
+
+            # If still not found, try in frames (Meshkard popup loads inside frame sometimes)
+            if product_name == "לא זמין":
+                try:
+                    for frame in page.frames:
+                        for selector in name_selectors:
+                            try:
+                                element = await frame.query_selector(selector)
+                                if element:
+                                    text = (await element.inner_text()).strip()
+                                    if text:
+                                        product_name = text
+                                        raise StopIteration
+                            except Exception:
+                                continue
+                except StopIteration:
+                    pass
+
+            # Fallback: <meta property="og:title"> or <title>
+            if product_name == "לא זמין":
+                try:
+                    og_title = await page.query_selector('meta[property="og:title"]')
+                    if og_title:
+                        content = await og_title.get_attribute('content')
+                        if content and content.strip():
+                            product_name = content.strip()
+                except Exception:
+                    pass
+            if product_name == "לא זמין":
+                try:
+                    title_text = (await page.title()) or ""
+                    title_text = title_text.strip()
+                    if title_text:
+                        product_name = title_text
+                except Exception:
+                    pass
             
             # Price
             price_selectors = [
@@ -470,21 +510,32 @@ class StockScraper:
     def _extract_product_info_soup(self, soup: BeautifulSoup, store_config: Dict[str, Any], url: str) -> ProductInfo:
         """Extract product info from BeautifulSoup object"""
         try:
-            # Product name
-            name_selectors = [
+            # Product name (store-specific first, then generic; also try meta/title)
+            product_name = "לא זמין"
+            selectors = store_config.get('name_selectors', []) or []
+            generic_selectors = [
                 'h1',
                 '.product-title',
                 '.product-name',
                 '[data-testid="product-title"]',
                 '.item-title'
             ]
-            
-            product_name = "לא זמין"
+            name_selectors = selectors + [s for s in generic_selectors if s not in selectors]
+
             for selector in name_selectors:
                 element = soup.select_one(selector)
                 if element and element.get_text(strip=True):
                     product_name = element.get_text(strip=True)
                     break
+
+            # Fallbacks: meta og:title and <title>
+            if product_name == "לא זמין":
+                og_meta = soup.select_one('meta[property="og:title"]')
+                if og_meta and og_meta.get('content') and og_meta.get('content').strip():
+                    product_name = og_meta.get('content').strip()
+            if product_name == "לא זמין":
+                if soup.title and soup.title.get_text(strip=True):
+                    product_name = soup.title.get_text(strip=True)
             
             # Price
             price_selectors = [

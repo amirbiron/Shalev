@@ -1,0 +1,3 @@
+[console_scripts]
+bot-check-health = main:health_check
+stock-tracker-bot = main:main

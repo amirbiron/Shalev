@@ -66,6 +66,16 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
         'name': 'משקארד',
         'base_url': 'https://www.mashkarcard.co.il',
         'domains': ['meshekard.co.il', 'mashkarcard.co.il'],
+        # Store-specific selectors for product name extraction (popup/ASP.NET layout)
+        'name_selectors': [
+            '#hdTitle',
+            '#itemTitle',
+            '[id*="lblTitle"]',
+            '[id*="lblItem"]',
+            '.product-title',
+            '.item-title',
+            'h1'
+        ],
         'stock_selector': '.product-stock-status, .availability, .stock, .in-stock, .out-of-stock',
         'out_of_stock_indicators': ['אזל מהמלאי', 'לא זמין', 'אזל', 'זמנית לא זמין'],
         'requires_js': True,

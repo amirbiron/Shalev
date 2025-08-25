@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+stock_tracker_bot.egg-info/PKG-INFO
+stock_tracker_bot.egg-info/SOURCES.txt
+stock_tracker_bot.egg-info/dependency_links.txt
+stock_tracker_bot.egg-info/entry_points.txt
+stock_tracker_bot.egg-info/requires.txt
+stock_tracker_bot.egg-info/top_level.txt
+tests/test_basic.py
