@@ -262,6 +262,9 @@ class DatabaseManager:
             tracking.updated_at = now
             tracking.status = TrackingStatus.ACTIVE
             doc = tracking.to_dict()
+            # Ensure MongoDB generates a proper ObjectId
+            if doc.get('_id') is None:
+                doc.pop('_id', None)
 
             # Atomic upsert that returns the document in one round-trip
             filter_q = {'user_id': tracking.user_id, 'product_url': tracking.product_url}
