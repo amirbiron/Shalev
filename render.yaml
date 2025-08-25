@@ -16,8 +16,8 @@ services:
     autoDeploy: true
     branch: main
     
-    # Health Check Configuration
-    healthCheckPath: /health
+    # Health Check Configuration (use simple liveness to avoid startup race conditions)
+    healthCheckPath: /uptime
     
     # Environment Variables
     envVars:
