@@ -770,6 +770,48 @@ class StockScraper:
             pass
         return None
 
+    async def _fetch_name_via_text_proxy(self, url: str, store_config: Dict[str, Any]) -> Optional[str]:
+        """Last-resort: fetch a text-rendered copy via r.jina.ai and guess a Hebrew product name.
+        This avoids changing browser navigation and can bypass some JS/auth walls for public text.
+        """
+        try:
+            if not self.session:
+                await self.init_session()
+            parsed = urlparse(url)
+            # Build proxy URL: https://r.jina.ai/http://host/path?query
+            proxy = f"https://r.jina.ai/http://{parsed.netloc}{parsed.path}"
+            if parsed.query:
+                proxy += f"?{parsed.query}"
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with self.session.get(proxy, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return None
+                text = await resp.text()
+            # Heuristics: find first reasonable Hebrew line that is not store/login generic
+            candidates: List[str] = []
+            blacklist = {store_config.get('name', '').strip(), 'משקארד', 'התחברות', 'כניסה', 'הרשמה', 'סל קניות'}
+            for raw_line in text.splitlines():
+                line = raw_line.strip().strip('"\'')
+                if len(line) < 5 or len(line) > 140:
+                    continue
+                # Contains Hebrew letters
+                if not re.search(r"[\u0590-\u05FF]", line):
+                    continue
+                # Skip generic/boilerplate
+                if any(b and b in line for b in blacklist):
+                    continue
+                candidates.append(line)
+                if len(candidates) >= 5:
+                    break
+            # Prefer the longest line as product name candidate
+            if candidates:
+                candidates.sort(key=len, reverse=True)
+                name = candidates[0]
+                return name
+        except Exception:
+            return None
+        return None
+
     async def _check_mashkar_stock(self, url: str) -> Optional[bool]:
         try:
             product_id = self._extract_mashkar_product_id(url)
