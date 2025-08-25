@@ -56,8 +56,9 @@ class BotConfig:
         if not self.TELEGRAM_TOKEN:
             raise ValueError("TELEGRAM_TOKEN is required")
         
-        if self.ENVIRONMENT == 'production' and not self.WEBHOOK_URL:
-            raise ValueError("WEBHOOK_URL is required in production")
+        # In production, WEBHOOK_URL is required unless FORCE_POLLING is enabled
+        if self.ENVIRONMENT == 'production' and not self.WEBHOOK_URL and not self.FORCE_POLLING:
+            raise ValueError("WEBHOOK_URL is required in production (unless FORCE_POLLING=true)")
 
 # Supported clubs/stores configuration
 SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
