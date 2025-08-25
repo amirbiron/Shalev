@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
     global bot_instance, db_manager, telegram_app, polling_task, init_task, initialized
 
     async def initialize_services():
-        nonlocal initialized
+        global initialized
         logger.info("🚀 Starting Stock Tracker Bot (background init)...")
         try:
             # Initialize database
