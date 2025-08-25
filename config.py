@@ -115,6 +115,12 @@ SUPPORTED_CLUBS: Dict[str, Dict[str, str]] = {
     'behazdaa': {
         'name': 'בהצדעה',
         'base_url': 'https://www.behazdaa.co.il',
+        'domains': [
+            'behatsdaa.org.il', 'www.behatsdaa.org.il',
+            'behatsdaa.co.il', 'www.behatsdaa.co.il',
+            'behazdaa.co.il', 'www.behazdaa.co.il',
+            'behazdaa.org.il', 'www.behazdaa.org.il'
+        ],
         'stock_selector': '.availability',
         'out_of_stock_indicators': ['אזל מהמלאי'],
         'requires_js': True
