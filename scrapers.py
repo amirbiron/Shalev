@@ -218,15 +218,31 @@ class StockScraper:
                 '.variants select, .options select',
                 '.variant, .option, [data-variant], [data-option]'
             ]
+            # Domain-specific hints and keywords
+            is_mashkar = store_id == 'mashkar' or ('meshekard.co.il' in url or 'mashkarcard.co.il' in url)
+            is_behazdaa = store_id == 'behazdaa' or ('behazdaa' in url or 'behatsdaa' in url)
+            hebrew_cta_keywords = ['בחר', 'הוסף', 'הוספה', 'הזמן', 'רכישה', 'קנה', 'קנייה', 'קניה', 'הוסף לעגלה', 'הזמן עכשיו']
 
             if requires_js:
                 page = await self.browser.new_page()
                 try:
                     await page.goto(url, wait_until='domcontentloaded', timeout=15000)
                     await asyncio.sleep(1)
+                    # Use newest page if popup opened (common in Meshkard)
+                    content_page = page
+                    try:
+                        context_pages = page.context.pages
+                        if context_pages and context_pages[-1] is not None:
+                            content_page = context_pages[-1]
+                            try:
+                                await content_page.bring_to_front()
+                            except Exception:
+                                pass
+                    except Exception:
+                        content_page = page
                     # Try selects first
                     for sel in selectors[:2]:
-                        nodes = await page.query_selector_all(sel)
+                        nodes = await content_page.query_selector_all(sel)
                         for node in nodes:
                             try:
                                 tag = (await node.evaluate('(el) => el.tagName')).lower()
@@ -241,13 +257,74 @@ class StockScraper:
                                         options.append({'label': txt, 'key': key})
                     # Generic labeled option items
                     if not options:
-                        nodes = await page.query_selector_all(selectors[2])
+                        nodes = await content_page.query_selector_all(selectors[2])
                         for node in nodes[:20]:
                             txt = (await node.inner_text() or '').strip()
                             if txt and any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה']):
                                 key = re.sub(r"\s+", " ", txt).strip().lower()
                                 options.append({'label': txt, 'key': key})
+                    # Domain-specific radio/CTA extraction for Meshkard and Behazdaa
+                    try:
+                        if is_mashkar or is_behazdaa:
+                            containers = ['#pnlDeals', '#pnlDeal', '#dealPanel', '.benefits', '.deals', '.product-options', '.variations', '.options', '.option', '.variant', '.deal', '.benefit']
+                            container_selector = ', '.join(containers)
+                            container_nodes = await content_page.query_selector_all(container_selector)
+                            for cnode in container_nodes[:10]:
+                                radios = await cnode.query_selector_all('input[type="radio"]')
+                                for r in radios[:20]:
+                                    try:
+                                        label_text = await r.evaluate('''(el) => {
+                                            const id = el.id;
+                                            if (id) {
+                                                const lab = document.querySelector(`label[for="${id}"]`);
+                                                if (lab) { return lab.innerText.trim(); }
+                                            }
+                                            const row = el.closest("tr, .deal, .benefit, .option, .variant, .product-row");
+                                            if (row) { return row.innerText.trim(); }
+                                            return (el.parentElement && el.parentElement.innerText) ? el.parentElement.innerText.trim() : '';
+                                        }''')
+                                    except Exception:
+                                        label_text = ''
+                                    txt = (label_text or '').strip()
+                                    if txt:
+                                        key = re.sub(r"\s+", " ", txt).strip().lower()
+                                        options.append({'label': txt, 'key': key})
+                            # CTA buttons/links within option blocks
+                            clickable_selector = 'a, button, input[type="button"], input[type="submit"]'
+                            clickable_nodes = await content_page.query_selector_all(clickable_selector)
+                            for btn in clickable_nodes[:80]:
+                                try:
+                                    raw = (await btn.inner_text() or '').strip()
+                                except Exception:
+                                    raw = ''
+                                if not raw:
+                                    try:
+                                        raw = (await btn.get_attribute('value') or '').strip()
+                                    except Exception:
+                                        raw = ''
+                                if not raw:
+                                    continue
+                                if not any(k in raw for k in hebrew_cta_keywords):
+                                    continue
+                                try:
+                                    context_text = await btn.evaluate('(el) => {\n                                        const block = el.closest("tr, .deal, .benefit, .option, .variant, .product-row, .product, .item");\n                                        if (block) { return block.innerText.trim(); }\n                                        return el.parentElement ? el.parentElement.innerText.trim() : "";\n                                    }')
+                                except Exception:
+                                    context_text = ''
+                                txt = (context_text or raw).strip()
+                                if txt:
+                                    key = re.sub(r"\s+", " ", txt).strip().lower()
+                                    options.append({'label': txt, 'key': key})
+                    except Exception:
+                        pass
                 finally:
+                    try:
+                        if 'content_page' in locals() and content_page is not page:
+                            try:
+                                await content_page.close()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     await page.close()
             else:
                 async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -269,6 +346,42 @@ class StockScraper:
                         if txt and (any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה'])):
                             key = re.sub(r"\s+", " ", txt).strip().lower()
                             options.append({'label': txt, 'key': key})
+                # Domain-specific HTTP fallbacks for Meshkard/Behazdaa
+                try:
+                    if is_mashkar or is_behazdaa:
+                        # Radios with labels
+                        for radio in soup.select('input[type="radio"]')[:40]:
+                            label_text = ''
+                            rid = radio.get('id')
+                            if rid:
+                                lab = soup.select_one(f'label[for="{rid}"]')
+                                if lab:
+                                    label_text = lab.get_text(strip=True)
+                            if not label_text:
+                                parent = radio.find_parent(['tr', 'div', 'li'])
+                                if parent:
+                                    label_text = parent.get_text(strip=True)
+                            txt = (label_text or '').strip()
+                            if txt:
+                                key = re.sub(r"\s+", " ", txt).strip().lower()
+                                options.append({'label': txt, 'key': key})
+                        # CTA buttons near option blocks
+                        for el in soup.select('a, button, input[type="button"], input[type="submit"]')[:120]:
+                            raw = (el.get_text(strip=True) or el.get('value') or '').strip()
+                            if not raw:
+                                continue
+                            if not any(k in raw for k in hebrew_cta_keywords):
+                                continue
+                            parent = el.find_parent(['tr', 'div', 'li'])
+                            context_text = ''
+                            if parent:
+                                context_text = parent.get_text(strip=True)
+                            txt = (context_text or raw).strip()
+                            if txt:
+                                key = re.sub(r"\s+", " ", txt).strip().lower()
+                                options.append({'label': txt, 'key': key})
+                except Exception:
+                    pass
         except Exception:
             return options
         # Deduplicate by key
