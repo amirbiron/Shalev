@@ -119,7 +119,8 @@ class StockTrackerBot:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_url_input)
                 ],
                 WAITING_FOR_OPTION: [
-                    CallbackQueryHandler(self.handle_option_selection, pattern=r"^opt_")
+                    CallbackQueryHandler(self.handle_option_selection, pattern=r"^opt_"),
+                    CallbackQueryHandler(self.handle_option_selection, pattern=r"^opt_skip_all$")
                 ],
                 SETTING_FREQUENCY: [
                     CallbackQueryHandler(self.handle_frequency_selection, pattern=r"^freq_")
