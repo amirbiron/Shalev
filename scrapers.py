@@ -214,14 +214,14 @@ class StockScraper:
 
             # Heuristics for common option blocks
             selectors = [
-                'select[name*="variant"], select[name*="option"], select[name*="deal"]',
-                '.variants select, .options select',
-                '.variant, .option, [data-variant], [data-option]'
+                'select[name*="variant"], select[name*="option"], select[name*="deal"], select[id*="variant"], select[id*="option"], select[id*="deal"]',
+                '.variants select, .options select, .product-options select',
+                '.variant, .option, [data-variant], [data-option], .deal, .benefit, .product-row'
             ]
             # Domain-specific hints and keywords
             is_mashkar = store_id == 'mashkar' or ('meshekard.co.il' in url or 'mashkarcard.co.il' in url)
             is_behazdaa = store_id == 'behazdaa' or ('behazdaa' in url or 'behatsdaa' in url)
-            hebrew_cta_keywords = ['בחר', 'הוסף', 'הוספה', 'הזמן', 'רכישה', 'קנה', 'קנייה', 'קניה', 'הוסף לעגלה', 'הזמן עכשיו']
+            hebrew_cta_keywords = ['בחר', 'הוסף', 'הוספה', 'הזמן', 'רכישה', 'קנה', 'קנייה', 'קניה', 'הוסף לעגלה', 'הזמן עכשיו', 'קבל', 'המשך']
 
             if requires_js:
                 page = await self.browser.new_page()
@@ -258,9 +258,9 @@ class StockScraper:
                     # Generic labeled option items
                     if not options:
                         nodes = await content_page.query_selector_all(selectors[2])
-                        for node in nodes[:20]:
+                        for node in nodes[:30]:
                             txt = (await node.inner_text() or '').strip()
-                            if txt and any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה']):
+                            if txt and (any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה'])):
                                 key = re.sub(r"\s+", " ", txt).strip().lower()
                                 options.append({'label': txt, 'key': key})
                     # Domain-specific radio/CTA extraction for Meshkard and Behazdaa
@@ -269,9 +269,9 @@ class StockScraper:
                             containers = ['#pnlDeals', '#pnlDeal', '#dealPanel', '.benefits', '.deals', '.product-options', '.variations', '.options', '.option', '.variant', '.deal', '.benefit']
                             container_selector = ', '.join(containers)
                             container_nodes = await content_page.query_selector_all(container_selector)
-                            for cnode in container_nodes[:10]:
-                                radios = await cnode.query_selector_all('input[type="radio"]')
-                                for r in radios[:20]:
+                            for cnode in container_nodes[:12]:
+                                radios = await cnode.query_selector_all('input[type="radio"], input[type="checkbox"]')
+                                for r in radios[:30]:
                                     try:
                                         label_text = await r.evaluate('''(el) => {
                                             const id = el.id;
@@ -279,7 +279,7 @@ class StockScraper:
                                                 const lab = document.querySelector(`label[for="${id}"]`);
                                                 if (lab) { return lab.innerText.trim(); }
                                             }
-                                            const row = el.closest("tr, .deal, .benefit, .option, .variant, .product-row");
+                                            const row = el.closest("tr, .deal, .benefit, .option, .variant, .product-row, .product, .item");
                                             if (row) { return row.innerText.trim(); }
                                             return (el.parentElement && el.parentElement.innerText) ? el.parentElement.innerText.trim() : '';
                                         }''')
@@ -292,7 +292,7 @@ class StockScraper:
                             # CTA buttons/links within option blocks
                             clickable_selector = 'a, button, input[type="button"], input[type="submit"]'
                             clickable_nodes = await content_page.query_selector_all(clickable_selector)
-                            for btn in clickable_nodes[:80]:
+                            for btn in clickable_nodes[:120]:
                                 try:
                                     raw = (await btn.inner_text() or '').strip()
                                 except Exception:
@@ -307,7 +307,11 @@ class StockScraper:
                                 if not any(k in raw for k in hebrew_cta_keywords):
                                     continue
                                 try:
-                                    context_text = await btn.evaluate('(el) => {\n                                        const block = el.closest("tr, .deal, .benefit, .option, .variant, .product-row, .product, .item");\n                                        if (block) { return block.innerText.trim(); }\n                                        return el.parentElement ? el.parentElement.innerText.trim() : "";\n                                    }')
+                                    context_text = await btn.evaluate('''(el) => {
+                                        const block = el.closest("tr, .deal, .benefit, .option, .variant, .product-row, .product, .item");
+                                        if (block) { return block.innerText.trim(); }
+                                        return el.parentElement ? el.parentElement.innerText.trim() : "";
+                                    }''')
                                 except Exception:
                                     context_text = ''
                                 txt = (context_text or raw).strip()
@@ -341,7 +345,7 @@ class StockScraper:
                                 key = re.sub(r"\s+", " ", txt).strip().lower()
                                 options.append({'label': txt, 'key': key})
                 if not options:
-                    for node in soup.select(selectors[2])[:20]:
+                    for node in soup.select(selectors[2])[:40]:
                         txt = node.get_text(strip=True)
                         if txt and (any(ch.isdigit() for ch in txt) or any(word in txt for word in ['%', '₪', 'שח', 'הנחה'])):
                             key = re.sub(r"\s+", " ", txt).strip().lower()
@@ -350,7 +354,7 @@ class StockScraper:
                 try:
                     if is_mashkar or is_behazdaa:
                         # Radios with labels
-                        for radio in soup.select('input[type="radio"]')[:40]:
+                        for radio in soup.select('input[type="radio"], input[type="checkbox"]')[:80]:
                             label_text = ''
                             rid = radio.get('id')
                             if rid:
@@ -366,7 +370,7 @@ class StockScraper:
                                 key = re.sub(r"\s+", " ", txt).strip().lower()
                                 options.append({'label': txt, 'key': key})
                         # CTA buttons near option blocks
-                        for el in soup.select('a, button, input[type="button"], input[type="submit"]')[:120]:
+                        for el in soup.select('a, button, input[type="button"], input[type="submit"]')[:160]:
                             raw = (el.get_text(strip=True) or el.get('value') or '').strip()
                             if not raw:
                                 continue
@@ -384,6 +388,23 @@ class StockScraper:
                     pass
         except Exception:
             return options
+        # If JS path yielded nothing but HTTP may work, try HTTP quickly once
+        if not options:
+            try:
+                if not self.session:
+                    await self.init_session()
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp2:
+                    if resp2.status == 200:
+                        html2 = await resp2.text()
+                        soup2 = BeautifulSoup(html2, 'html.parser')
+                        for sel in ['select option', '.option', '.variant', '.deal', '.benefit']:
+                            for node in soup2.select(sel)[:80]:
+                                txt = node.get_text(strip=True)
+                                if txt:
+                                    key = re.sub(r"\s+", " ", txt).strip().lower()
+                                    options.append({'label': txt, 'key': key})
+            except Exception:
+                pass
         # Deduplicate by key
         seen = set()
         unique: List[Dict[str, str]] = []
