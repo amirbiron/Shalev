@@ -386,12 +386,8 @@ class StockScraper:
                                 options.append({'label': txt, 'key': key})
                 except Exception:
                     pass
-        except Exception as e:
-            try:
-                logger.warning(f"⚠️ Option extraction error for {url}: {e}")
-            except Exception:
-                pass
-            # Continue to HTTP fallback below
+        except Exception:
+            return options
         # If JS path yielded nothing but HTTP may work, try HTTP quickly once
         if not options:
             try:
@@ -407,85 +403,6 @@ class StockScraper:
                                 if txt:
                                     key = re.sub(r"\s+", " ", txt).strip().lower()
                                     options.append({'label': txt, 'key': key})
-            except Exception:
-                pass
-        # Meshkard popup options fallback (if ite_item present)
-        if not options and (is_mashkar):
-            try:
-                parsed_popup = urlparse(url)
-                q = parse_qs(parsed_popup.query)
-                item_id = (q.get('ite_item') or [None])[0]
-                if item_id:
-                    if not self.session:
-                        await self.init_session()
-                    headers = dict(self.headers)
-                    mashkar_cfg = self.store_configs.get('mashkar') or {}
-                    if 'headers' in mashkar_cfg:
-                        headers.update(mashkar_cfg['headers'])
-                    headers['Accept-Encoding'] = 'gzip, deflate'
-                    headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                    headers['Referer'] = url
-                    for host in ['meshekard.co.il', 'www.meshekard.co.il', 'mashkarcard.co.il', 'www.mashkarcard.co.il']:
-                        popup_url = f"https://{host}/index_popup_meshek.aspx?ite_item={item_id}"
-                        try:
-                            async with self.session.get(popup_url, headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp3:
-                                if resp3.status != 200:
-                                    continue
-                                html3 = await resp3.text()
-                                soup3 = BeautifulSoup(html3, 'html.parser')
-                                for radio in soup3.select('input[type="radio"], input[type="checkbox"]')[:80]:
-                                    rid = radio.get('id')
-                                    label_text = ''
-                                    if rid:
-                                        lab = soup3.select_one(f'label[for="{rid}"]')
-                                        if lab:
-                                            label_text = lab.get_text(strip=True)
-                                    if not label_text:
-                                        parent = radio.find_parent(['tr', 'div', 'li'])
-                                        if parent:
-                                            label_text = parent.get_text(strip=True)
-                                    txt = (label_text or '').strip()
-                                    if txt:
-                                        key = re.sub(r"\s+", " ", txt).strip().lower()
-                                        options.append({'label': txt, 'key': key})
-                                for node in soup3.select('.deal, .benefit, .option, .variant, tr')[:80]:
-                                    txt = node.get_text(strip=True)
-                                    if txt and any(ch.isdigit() for ch in txt):
-                                        key = re.sub(r"\s+", " ", txt).strip().lower()
-                                        options.append({'label': txt, 'key': key})
-                                if options:
-                                    break
-                        except Exception:
-                            continue
-            except Exception:
-                pass
-        # Text-proxy fallback to extract labeled options heuristically
-        if not options:
-            try:
-                if not self.session:
-                    await self.init_session()
-                parsed = urlparse(url)
-                proxy = f"https://r.jina.ai/http://{parsed.netloc}{parsed.path}"
-                if parsed.query:
-                    proxy += f"?{parsed.query}"
-                async with self.session.get(proxy, timeout=aiohttp.ClientTimeout(total=8)) as resp4:
-                    if resp4.status == 200:
-                        text = await resp4.text()
-                        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-                        candidates = []
-                        for ln in lines:
-                            if any(sym in ln for sym in ['₪', '%', 'שח', 'ש"ח']) or re.search(r"\d+\s*(?:שח|₪|%)", ln):
-                                if 4 <= len(ln) <= 140:
-                                    candidates.append(ln)
-                        seen_c = set()
-                        for ln in candidates:
-                            k = re.sub(r"\s+", " ", ln).strip().lower()
-                            if k in seen_c:
-                                continue
-                            seen_c.add(k)
-                            options.append({'label': ln, 'key': k})
-                            if len(options) >= 8:
-                                break
             except Exception:
                 pass
         # Deduplicate by key
