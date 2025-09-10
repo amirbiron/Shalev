@@ -50,6 +50,10 @@ class ProductTracking:
     error_count: int = 0
     notification_sent: bool = False
     product_key: Optional[str] = None
+    # For change detection mode
+    tracking_mode: str = 'changes'  # 'stock' or 'changes'
+    last_page_hash: Optional[str] = None
+    change_count: int = 0
     _id: Optional[ObjectId] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -157,6 +161,7 @@ class DatabaseManager:
             await self.collections['trackings'].create_index('store_id')
             await self.collections['trackings'].create_index('product_key')
             await self.collections['trackings'].create_index('option_label')
+            await self.collections['trackings'].create_index('tracking_mode')
             await self.collections['trackings'].create_index([
                 ('status', 1), ('last_checked', 1)
             ])
@@ -344,6 +349,9 @@ class DatabaseManager:
                     store_id=doc['store_id'],
                     check_interval=doc['check_interval'],
                     status=TrackingStatus(doc['status']),
+                    tracking_mode=doc.get('tracking_mode', 'stock'),
+                    last_page_hash=doc.get('last_page_hash'),
+                    change_count=doc.get('change_count', 0),
                     last_checked=doc.get('last_checked'),
                     last_status_change=doc.get('last_status_change'),
                     created_at=doc.get('created_at'),
@@ -385,6 +393,9 @@ class DatabaseManager:
                     store_id=doc['store_id'],
                     check_interval=doc['check_interval'],
                     status=TrackingStatus(doc['status']),
+                    tracking_mode=doc.get('tracking_mode', 'stock'),
+                    last_page_hash=doc.get('last_page_hash'),
+                    change_count=doc.get('change_count', 0),
                     last_checked=doc.get('last_checked'),
                     last_status_change=doc.get('last_status_change'),
                     created_at=doc.get('created_at'),
@@ -402,7 +413,8 @@ class DatabaseManager:
             return []
     
     async def update_tracking_status(self, tracking_id: ObjectId, new_status: TrackingStatus, 
-                                   error_count: int = 0, notification_sent: bool = False):
+                                   error_count: int = 0, notification_sent: bool = False,
+                                   page_hash: Optional[str] = None, change_detected: bool = False):
         """Update tracking status"""
         try:
             now = datetime.utcnow()
@@ -414,14 +426,32 @@ class DatabaseManager:
                 'notification_sent': notification_sent
             }
             
+            # Update page hash if provided
+            if page_hash:
+                update_data['last_page_hash'] = page_hash
+            
+            # If change detected, increment counter
+            if change_detected:
+                update_data['change_count'] = {'$inc': 1}
+            
             # If status changed, update timestamp
             current_tracking = await self.collections['trackings'].find_one({'_id': tracking_id})
             if current_tracking and current_tracking.get('status') != new_status.value:
                 update_data['last_status_change'] = now
             
+            # Handle increment operations separately
+            inc_ops = {}
+            if 'change_count' in update_data:
+                inc_ops['change_count'] = 1
+                del update_data['change_count']
+            
+            update_ops = {'$set': update_data}
+            if inc_ops:
+                update_ops['$inc'] = inc_ops
+            
             await self.collections['trackings'].update_one(
                 {'_id': tracking_id},
-                {'$set': update_data}
+                update_ops
             )
             
         except Exception as e:

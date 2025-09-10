@@ -241,6 +241,9 @@ class StockTrackerBot:
                     "❌ לא הצלחתי לטעון את פרטי המוצר. נסו שוב מאוחר יותר או שלחו קישור מוצר ישיר."
                 )
                 return WAITING_FOR_URL
+            
+            # Get initial page hash for change detection
+            initial_hash = getattr(product_info, 'page_hash', None)
 
             # Detect invalid/placeholder product name to trigger manual rename prompt later
             try:
@@ -345,6 +348,10 @@ class StockTrackerBot:
                     )
                     return WAITING_FOR_OPTION
                 else:
+                    # Check if store requires change detection mode (like Shufersal)
+                    store_config = SUPPORTED_CLUBS.get(store_info['store_id'], {})
+                    tracking_mode = 'changes' if store_config.get('force_change_detection', False) else 'changes'
+                    
                     # Create tracking object and insert
                     tracking = ProductTracking(
                         user_id=user_id,
@@ -354,7 +361,9 @@ class StockTrackerBot:
                         store_name=store_info['name'],
                         store_id=store_info['store_id'],
                         check_interval=default_interval,
-                        status=TrackingStatus.ACTIVE
+                        status=TrackingStatus.ACTIVE,
+                        tracking_mode=tracking_mode,  # Always use 'changes' mode now
+                        last_page_hash=initial_hash
                     )
                     tracking_id = await self.db.add_tracking(tracking)
                     if not tracking_id:
@@ -390,7 +399,7 @@ class StockTrackerBot:
                 f"🎉 נוסף מעקב חדש!\n\n"
                 f"📦 **{product_info.name}**\n"
                 f"🏪 {store_info['name']}\n"
-                f"📊 סטטוס נוכחי: {'במלאי' if product_info.in_stock else 'אזל מהמלאי'}\n\n"
+                f"🔄 מעקב אחרי שינויים בעמוד\n\n"
                 f"⏰ באיזו תדירות לבדוק?",
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
@@ -509,6 +518,10 @@ class StockTrackerBot:
                         option_label = label
                         break
 
+            # Get initial page hash
+            initial_info = await self.scraper.get_product_info(url, store_id)
+            initial_hash = getattr(initial_info, 'page_hash', None) if initial_info else None
+            
             tracking = ProductTracking(
                 user_id=user_id,
                 product_url=url,
@@ -520,7 +533,9 @@ class StockTrackerBot:
                 option_label=option_label,
                 option_key=option_key,
                 check_interval=default_interval,
-                status=TrackingStatus.ACTIVE
+                status=TrackingStatus.ACTIVE,
+                tracking_mode='changes',
+                last_page_hash=initial_hash
             )
             tracking_id = await self.db.add_tracking(tracking)
             if not tracking_id:
@@ -582,7 +597,16 @@ class StockTrackerBot:
             if active_trackings:
                 message += "🟢 **פעילים:**\n"
                 for i, tracking in enumerate(active_trackings[:10], 1):
-                    status_emoji = "✅" if tracking.status == TrackingStatus.IN_STOCK else "❌"
+                    # For change tracking mode, show different emoji
+                    if getattr(tracking, 'tracking_mode', 'stock') == 'changes':
+                        status_emoji = "🔄"  # Change tracking mode
+                        change_count = getattr(tracking, 'change_count', 0)
+                        if change_count > 0:
+                            status_emoji = f"🔔({change_count})"  # Show number of changes detected
+                    else:
+                        # Legacy stock mode
+                        status_emoji = "✅" if tracking.status == TrackingStatus.IN_STOCK else "❌"
+                    
                     last_check = ""
                     if tracking.last_checked:
                         time_diff = datetime.utcnow() - tracking.last_checked
@@ -956,63 +980,189 @@ class StockTrackerBot:
             logger.error(f"❌ Error in stock check cycle: {e}")
     
     async def _check_single_stock(self, tracking: ProductTracking):
-        """Check a single stock and send notification if needed"""
+        """Check for page changes and send notification if needed"""
         try:
-            # Get current stock status
+            # Get current page state
             store_config = SUPPORTED_CLUBS.get(tracking.store_id)
             if not store_config:
                 logger.warning(f"⚠️ Unknown store: {tracking.store_id}")
                 return
             
-            current_status = await self.scraper.check_stock_status(
-                tracking.product_url,
-                tracking.store_id
-            )
-            
-            if current_status is None:
-                # Error checking - increment error count
-                error_count = tracking.error_count + 1
-                if error_count >= 5:
+            # Check if tracking mode is 'changes' (new mode) or 'stock' (legacy)
+            if getattr(tracking, 'tracking_mode', 'stock') == 'changes':
+                # New change detection mode
+                change_result = await self.scraper.check_page_changes(
+                    tracking.product_url,
+                    tracking.store_id,
+                    getattr(tracking, 'last_page_hash', None)
+                )
+                
+                if change_result['change_type'] == 'error':
+                    # Error checking - increment error count
+                    error_count = tracking.error_count + 1
+                    if error_count >= 5:
+                        await self.db.update_tracking_status(
+                            tracking._id,
+                            TrackingStatus.ERROR,
+                            error_count=error_count
+                        )
+                    else:
+                        await self.db.update_tracking_status(
+                            tracking._id,
+                            tracking.status,
+                            error_count=error_count
+                        )
+                    return
+                
+                # Check if page changed
+                if change_result['changed'] and change_result['change_type'] != 'initial':
+                    # Page changed - send notification
                     await self.db.update_tracking_status(
                         tracking._id,
-                        TrackingStatus.ERROR,
-                        error_count=error_count
+                        TrackingStatus.ACTIVE,
+                        error_count=0,
+                        notification_sent=True,
+                        page_hash=change_result['current_hash'],
+                        change_detected=True
                     )
+                    # Check if there are new deals/items
+                    new_items = change_result.get('new_items', [])
+                    await self._send_change_notification(tracking, new_items)
                 else:
+                    # No change - just update last checked
                     await self.db.update_tracking_status(
                         tracking._id,
-                        tracking.status,
-                        error_count=error_count
+                        TrackingStatus.ACTIVE,
+                        error_count=0,
+                        notification_sent=False,
+                        page_hash=change_result['current_hash']
                     )
-                return
-            
-            # Determine if we should send notification
-            should_notify = False
-            new_status = TrackingStatus.IN_STOCK if current_status else TrackingStatus.OUT_OF_STOCK
-            
-            # Check if status changed from out-of-stock to in-stock
-            if (tracking.status == TrackingStatus.OUT_OF_STOCK and 
-                new_status == TrackingStatus.IN_STOCK and 
-                not tracking.notification_sent):
-                should_notify = True
-            
-            # Update tracking status
-            await self.db.update_tracking_status(
-                tracking._id,
-                new_status,
-                error_count=0,
-                notification_sent=should_notify
-            )
-            
-            # Send notification if needed
-            if should_notify:
-                await self._send_stock_notification(tracking)
+            else:
+                # Legacy stock checking mode
+                current_status = await self.scraper.check_stock_status(
+                    tracking.product_url,
+                    tracking.store_id
+                )
+                
+                if current_status is None:
+                    # Error checking
+                    error_count = tracking.error_count + 1
+                    if error_count >= 5:
+                        await self.db.update_tracking_status(
+                            tracking._id,
+                            TrackingStatus.ERROR,
+                            error_count=error_count
+                        )
+                    else:
+                        await self.db.update_tracking_status(
+                            tracking._id,
+                            tracking.status,
+                            error_count=error_count
+                        )
+                    return
+                
+                # Determine if we should send notification
+                should_notify = False
+                new_status = TrackingStatus.IN_STOCK if current_status else TrackingStatus.OUT_OF_STOCK
+                
+                # Check if status changed from out-of-stock to in-stock
+                if (tracking.status == TrackingStatus.OUT_OF_STOCK and 
+                    new_status == TrackingStatus.IN_STOCK and 
+                    not tracking.notification_sent):
+                    should_notify = True
+                
+                # Update tracking status
+                await self.db.update_tracking_status(
+                    tracking._id,
+                    new_status,
+                    error_count=0,
+                    notification_sent=should_notify
+                )
+                
+                # Send notification if needed
+                if should_notify:
+                    await self._send_stock_notification(tracking)
                 
         except Exception as e:
-            logger.error(f"❌ Error checking stock for {tracking.product_name}: {e}")
+            logger.error(f"❌ Error checking for {tracking.product_name}: {e}")
+    
+    async def _send_change_notification(self, tracking: ProductTracking, new_items: List[Dict[str, str]] = None):
+        """Send page change notification"""
+        try:
+            # Respect user's notification settings
+            user_doc = await self.db.collections['users'].find_one({'user_id': tracking.user_id})
+            if user_doc and user_doc.get('notifications_enabled', True) is False:
+                logger.info(f"🔕 Notifications disabled for user {tracking.user_id}, skipping alert")
+                return
+
+            # Build message based on whether we have new items
+            if new_items:
+                message = (
+                    f"🎉 **זוהו פריטים חדשים בעמוד!**\n\n"
+                    f"📦 {tracking.product_name}\n"
+                    f"🏪 {tracking.store_name}\n\n"
+                    f"**פריטים חדשים:**\n"
+                )
+                for item in new_items[:3]:  # Show max 3 items
+                    message += f"• {item.get('title', 'פריט חדש')}\n"
+                if len(new_items) > 3:
+                    message += f"• ועוד {len(new_items) - 3} פריטים...\n"
+                message += f"\n🔗 [לחצו כאן לצפייה בעמוד]({tracking.product_url})"
+            else:
+                message = (
+                    f"🔔 **זוהה שינוי בעמוד!**\n\n"
+                    f"📦 {tracking.product_name}\n"
+                    f"🏪 {tracking.store_name}\n"
+                    f"🔗 [לחצו כאן לצפייה בעמוד]({tracking.product_url})\n\n"
+                    f"ℹ️ ייתכן שהסטטוס של המוצר השתנה או שהתווסף מידע חדש"
+                )
+            
+            # Create action keyboard
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🛒 צפה בעמוד", url=tracking.product_url)
+                ],
+                [
+                    InlineKeyboardButton("⏸ השהה מעקב", callback_data=f"pause_{tracking._id}"),
+                    InlineKeyboardButton("🗑 הסר מעקב", callback_data=f"remove_{tracking._id}")
+                ]
+            ])
+            
+            await self.bot.send_message(
+                chat_id=tracking.user_id,
+                text=message,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # Save alert to database
+            alert = StockAlert(
+                user_id=tracking.user_id,
+                product_tracking_id=tracking._id,
+                product_name=tracking.product_name,
+                product_url=tracking.product_url,
+                store_name=tracking.store_name,
+                alert_type='page_change',
+                message=message,
+                delivered=True
+            )
+            
+            await self.db.save_alert(alert)
+            
+            logger.info(f"🔔 Change notification sent to user {tracking.user_id}: {tracking.product_name}")
+            
+        except Forbidden:
+            # User blocked the bot
+            logger.info(f"🚫 User {tracking.user_id} blocked the bot")
+            await self.db.collections['users'].update_one(
+                {'user_id': tracking.user_id},
+                {'$set': {'blocked_bot': True}}
+            )
+        except Exception as e:
+            logger.error(f"❌ Error sending notification: {e}")
     
     async def _send_stock_notification(self, tracking: ProductTracking):
-        """Send stock available notification"""
+        """Send stock available notification (legacy)"""
         try:
             # Respect user's notification settings
             user_doc = await self.db.collections['users'].find_one({'user_id': tracking.user_id})

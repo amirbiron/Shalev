@@ -27,6 +27,7 @@ class ProductInfo:
     stock_text: str
     last_checked: str
     error_message: Optional[str] = None
+    page_hash: Optional[str] = None  # Hash of page content for change detection
 
 class StockScraper:
     """Main scraper class supporting multiple scraping strategies"""
@@ -133,6 +134,95 @@ class StockScraper:
         if hasattr(self, 'playwright'):
             await self.playwright.stop()
     
+    async def get_page_snapshot(self, url: str, store_id: str) -> Optional[str]:
+        """Get a snapshot/hash of the page content for change detection."""
+        try:
+            store_config = self.store_configs.get(store_id)
+            if not store_config:
+                return None
+            
+            # Get page content
+            if store_config.get('requires_js', False):
+                content = await self._get_page_content_playwright(url, store_config)
+            else:
+                content = await self._get_page_content_http(url, store_config)
+            
+            if not content:
+                return None
+            
+            # Create a normalized hash of the content
+            import hashlib
+            # Remove timestamps and dynamic elements
+            normalized = self._normalize_content_for_hash(content, store_id)
+            return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting page snapshot: {e}")
+            return None
+    
+    def _normalize_content_for_hash(self, content: str, store_id: str) -> str:
+        """Normalize content by removing dynamic elements that shouldn't trigger change detection."""
+        import re
+        # Remove common dynamic elements
+        # Remove timestamps
+        content = re.sub(r'\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}', '', content)
+        content = re.sub(r'\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}', '', content)
+        # Remove session IDs and tokens
+        content = re.sub(r'[a-f0-9]{32,}', '', content)
+        content = re.sub(r'token["\']?\s*[:=]\s*["\'][^"^\']+["\']', '', content, flags=re.IGNORECASE)
+        # Remove view counts and visitor numbers
+        content = re.sub(r'\b\d+\s*(צפיות|מבקרים|visitors|views)\b', '', content, flags=re.IGNORECASE)
+        # Keep only relevant product/stock related content
+        relevant_keywords = ['מלאי', 'במלאי', 'אזל', 'זמין', 'מחיר', 'הנחה', 'מבצע', 'stock', 'available', 'price', 'sale']
+        lines = content.split('\n')
+        relevant_lines = []
+        for line in lines:
+            if any(keyword in line.lower() for keyword in relevant_keywords):
+                relevant_lines.append(line.strip())
+        return ' '.join(relevant_lines)
+    
+    async def _get_page_content_playwright(self, url: str, store_config: Dict[str, Any]) -> Optional[str]:
+        """Get page content using Playwright."""
+        if not self.browser:
+            await self.init_browser()
+        page = None
+        try:
+            page = await self.browser.new_page()
+            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            await asyncio.sleep(2)
+            
+            # Get text content of the page
+            content = await page.content()
+            # Also get visible text
+            text_content = await page.evaluate('() => document.body.innerText')
+            
+            # Combine both for comprehensive snapshot
+            return f"{content}\n---TEXT---\n{text_content}"
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting page content with Playwright: {e}")
+            return None
+        finally:
+            if page:
+                await page.close()
+    
+    async def _get_page_content_http(self, url: str, store_config: Dict[str, Any]) -> Optional[str]:
+        """Get page content using HTTP."""
+        if not self.session:
+            await self.init_session()
+        try:
+            async with self.session.get(url, headers=self.headers) as response:
+                if response.status != 200:
+                    return None
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                # Get text content
+                text_content = soup.get_text(separator=' ', strip=True)
+                return f"{html}\n---TEXT---\n{text_content}"
+        except Exception as e:
+            logger.error(f"❌ Error getting page content with HTTP: {e}")
+            return None
+    
     async def get_product_info(self, url: str, store_id: str) -> Optional[ProductInfo]:
         try:
             store_config = self.store_configs.get(store_id)
@@ -186,6 +276,7 @@ class StockScraper:
             )
     
     async def check_stock_status(self, url: str, store_id: str) -> Optional[bool]:
+        """Check stock status - deprecated, use check_page_changes instead."""
         try:
             store_config = self.store_configs.get(store_id)
             if not store_config:
@@ -197,6 +288,90 @@ class StockScraper:
         except Exception as e:
             logger.error(f"❌ Error checking stock status for {url}: {e}")
             return None
+    
+    async def check_page_changes(self, url: str, store_id: str, previous_hash: Optional[str] = None) -> Dict[str, Any]:
+        """Check if page content has changed significantly.
+        Returns dict with: changed (bool), current_hash (str), change_type (str), new_items (list)
+        """
+        try:
+            current_hash = await self.get_page_snapshot(url, store_id)
+            
+            if not current_hash:
+                return {'changed': False, 'current_hash': None, 'change_type': 'error', 'new_items': []}
+            
+            if not previous_hash:
+                return {'changed': True, 'current_hash': current_hash, 'change_type': 'initial', 'new_items': []}
+            
+            changed = current_hash != previous_hash
+            change_type = 'content_update' if changed else 'no_change'
+            
+            # If it's a deals/promotions page, try to detect new items
+            new_items = []
+            if changed and self._is_deals_page(url):
+                new_items = await self._detect_new_deals(url, store_id, previous_hash)
+            
+            return {
+                'changed': changed,
+                'current_hash': current_hash,
+                'change_type': change_type,
+                'new_items': new_items
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking page changes: {e}")
+            return {'changed': False, 'current_hash': None, 'change_type': 'error', 'new_items': []}
+    
+    def _is_deals_page(self, url: str) -> bool:
+        """Check if URL is a deals/promotions page."""
+        deals_keywords = ['benefit', 'deal', 'promotion', 'sale', 'מבצע', 'הטבה', 'הנחה', 'מועדון']
+        url_lower = url.lower()
+        return any(keyword in url_lower for keyword in deals_keywords)
+    
+    async def _detect_new_deals(self, url: str, store_id: str, previous_hash: str) -> List[Dict[str, str]]:
+        """Detect new deals/items on a page."""
+        try:
+            # This is a simplified implementation
+            # In production, you'd want to parse and compare actual deal items
+            store_config = self.store_configs.get(store_id)
+            if not store_config:
+                return []
+            
+            # Get current page content
+            if store_config.get('requires_js', False):
+                content = await self._get_page_content_playwright(url, store_config)
+            else:
+                content = await self._get_page_content_http(url, store_config)
+            
+            if not content:
+                return []
+            
+            # Extract deal links/titles (simplified)
+            new_items = []
+            import re
+            # Look for common deal patterns
+            deal_patterns = [
+                r'<a[^>]*href="([^"]+)"[^>]*>([^<]*מבצע[^<]*)</a>',
+                r'<a[^>]*href="([^"]+)"[^>]*>([^<]*הטבה[^<]*)</a>',
+                r'<div[^>]*class="[^"]*deal[^"]*"[^>]*>([^<]+)</div>',
+                r'<div[^>]*class="[^"]*benefit[^"]*"[^>]*>([^<]+)</div>'
+            ]
+            
+            for pattern in deal_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                for match in matches[:5]:  # Limit to first 5 new items
+                    if isinstance(match, tuple) and len(match) >= 2:
+                        new_items.append({
+                            'title': match[1].strip(),
+                            'url': match[0] if match[0].startswith('http') else f"{store_config['base_url']}{match[0]}"
+                        })
+                    elif isinstance(match, str):
+                        new_items.append({'title': match.strip(), 'url': url})
+            
+            return new_items[:5]  # Return max 5 new items
+            
+        except Exception as e:
+            logger.error(f"❌ Error detecting new deals: {e}")
+            return []
 
     async def get_purchase_options(self, url: str, store_id: str) -> List[Dict[str, str]]:
         """Extract a list of purchasable options/variants/deals on the product page.
@@ -775,12 +950,25 @@ class StockScraper:
                 stock_text = "לא ניתן לקבוע"
                 in_stock = None if strict_availability else True
 
+            # Get page hash for change detection
+            page_hash = None
+            try:
+                content = await page.content()
+                text_content = await page.evaluate('() => document.body.innerText')
+                combined = f"{content}\n---TEXT---\n{text_content}"
+                normalized = self._normalize_content_for_hash(combined, store_config.get('store_id', ''))
+                import hashlib
+                page_hash = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+            except Exception:
+                pass
+            
             return ProductInfo(
                 name=product_name,
                 price=price,
                 in_stock=(True if in_stock is None else in_stock),
                 stock_text=stock_text,
-                last_checked=str(asyncio.get_event_loop().time())
+                last_checked=str(asyncio.get_event_loop().time()),
+                page_hash=page_hash
             )
         except Exception as e:
             logger.error(f"❌ Error extracting product info with Playwright: {e}")
@@ -891,12 +1079,23 @@ class StockScraper:
                 if not stock_text:
                     stock_text = "במלאי" if in_stock else "לא זמין"
 
+            # Get page hash for change detection
+            page_hash = None
+            try:
+                combined = f"{str(soup)}\n---TEXT---\n{soup.get_text(separator=' ', strip=True)}"
+                normalized = self._normalize_content_for_hash(combined, store_config.get('store_id', ''))
+                import hashlib
+                page_hash = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+            except Exception:
+                pass
+            
             return ProductInfo(
                 name=product_name,
                 price=price,
                 in_stock=in_stock,
                 stock_text=stock_text,
-                last_checked=str(asyncio.get_event_loop().time())
+                last_checked=str(asyncio.get_event_loop().time()),
+                page_hash=page_hash
             )
         except Exception as e:
             logger.error(f"❌ Error extracting product info with BeautifulSoup: {e}")
