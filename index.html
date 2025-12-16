@@ -2,51 +2,60 @@
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <title>מבחן הקיצון - Arial vs Heebo</title>
-    
+    <title>קרב הפונטים הגדול</title>
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;700&family=Rubik:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@900&display=swap');
-
-        body { display: flex; height: 100vh; margin: 0; text-align: center; }
+        body { margin: 0; background: #f4f4f4; font-family: sans-serif; }
+        .container { display: flex; height: 100vh; }
+        .col { flex: 1; padding: 40px 20px; text-align: center; transition: 0.3s; }
+        .col:hover { background: #fff; box-shadow: 0 0 20px rgba(0,0,0,0.1); transform: scale(1.02); z-index: 10; }
         
-        div { flex: 1; padding-top: 50px; }
+        h2 { font-size: 2rem; margin-bottom: 10px; }
+        p { font-size: 1.2rem; line-height: 1.6; color: #333; }
+        .big-letter { font-size: 5rem; display: block; margin: 20px 0; }
+        .tag { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 0.9rem; color: white; margin-bottom: 30px;}
 
-        /* צד ימין - אריאל */
-        .arial { 
-            background: #ffebee; 
-            font-family: Arial, sans-serif;
-        }
+        /* אריאל */
+        .arial { font-family: Arial, sans-serif; border-left: 1px solid #ddd; }
+        .arial .tag { background: #777; }
 
-        /* צד שמאל - היבו */
-        .heebo { 
-            background: #e8f5e9; 
-            /* טריק הדיבוג: אם Heebo נכשל, תראה Times New Roman */
-            font-family: 'Heebo', 'Times New Roman', serif; 
-        }
+        /* היבו */
+        .heebo { font-family: 'Heebo', sans-serif; border-left: 1px solid #ddd; }
+        .heebo .tag { background: #2196F3; }
 
-        h1 { font-size: 100px; margin: 0; }
-        p { font-size: 30px; }
-        
-        .letter-test {
-            font-size: 150px;
-            line-height: 1.2;
-            display: block;
-        }
+        /* רוביק */
+        .rubik { font-family: 'Rubik', sans-serif; }
+        .rubik .tag { background: #FF5722; }
+
     </style>
 </head>
 <body>
+    <div class="container">
+        
+        <div class="col arial">
+            <span class="tag">הברירת מחדל (הישן)</span>
+            <h2>אריאל (Arial)</h2>
+            <span class="big-letter">א</span>
+            <p>הפונט שכולם מכירים. <br>הוא קריא מאוד, אבל נחשב היום מיושן ומשעמם.</p>
+            <button style="font-family: inherit; padding: 10px 20px;">כפתור רגיל</button>
+        </div>
 
-    <div class="arial">
-        <p>אריאל (רגיל)</p>
-        <span class="letter-test">א</span>
-        <h1>שלום</h1>
+        <div class="col heebo">
+            <span class="tag">ההייטקיסט (טכני)</span>
+            <h2>היבו (Heebo)</h2>
+            <span class="big-letter">א</span>
+            <p>קווים ישרים, חדים ומדויקים.<br>מעולה לדאשבורדים ומערכות, אבל מרגיש קצת "קר".</p>
+            <button style="font-family: inherit; padding: 10px 20px;">כפתור טכני</button>
+        </div>
+
+        <div class="col rubik">
+            <span class="tag">הידידותי (המומלץ)</span>
+            <h2>רוביק (Rubik)</h2>
+            <span class="big-letter">א</span>
+            <p>פינות מעוגלות ונעימות.<br>הוא השילוב המושלם בין מודרני לבין "חם" ונעים לעין.</p>
+            <button style="font-family: inherit; padding: 10px 20px;">כפתור עגול</button>
+        </div>
+
     </div>
-
-    <div class="heebo">
-        <p>Heebo (מודרני)</p>
-        <span class="letter-test">א</span>
-        <h1>שלום</h1>
-    </div>
-
 </body>
 </html>
