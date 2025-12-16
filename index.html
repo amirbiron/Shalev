@@ -2,93 +2,51 @@
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>בדיקת פונטים - Arial vs Heebo</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;700&display=swap" rel="stylesheet">
+    <title>מבחן הקיצון - Arial vs Heebo</title>
     
     <style>
-        body {
-            margin: 0;
-            font-family: sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
+        @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@900&display=swap');
 
-        .container {
-            display: flex;
-            gap: 20px;
-            max-width: 1000px;
-            margin: 0 auto;
-        }
-
-        .card {
-            flex: 1;
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-
-        /* צד אריאל - רגיל */
-        .arial-side {
-            font-family: Arial, Helvetica, sans-serif;
-        }
-
-        /* צד היבו - עם טריק לזיהוי שגיאה */
-        .heebo-side {
-            /* הטריק: אם Heebo לא נטען, הדפדפן יעבור ל-'cursive' (כתב יד מוזר).
-               כך תדע מיד אם הטעינה נכשלה!
-            */
-            font-family: 'Heebo', cursive; 
-        }
-
-        h2 { border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        p { line-height: 1.6; font-size: 1.1rem; }
+        body { display: flex; height: 100vh; margin: 0; text-align: center; }
         
-        .status-box {
-            text-align: center;
-            padding: 10px;
-            margin-bottom: 20px;
-            background: #fff3cd;
-            border: 1px solid #ffeeba;
-            color: #856404;
-            border-radius: 5px;
-            display: none; /* מוסתר כברירת מחדל */
+        div { flex: 1; padding-top: 50px; }
+
+        /* צד ימין - אריאל */
+        .arial { 
+            background: #ffebee; 
+            font-family: Arial, sans-serif;
+        }
+
+        /* צד שמאל - היבו */
+        .heebo { 
+            background: #e8f5e9; 
+            /* טריק הדיבוג: אם Heebo נכשל, תראה Times New Roman */
+            font-family: 'Heebo', 'Times New Roman', serif; 
+        }
+
+        h1 { font-size: 100px; margin: 0; }
+        p { font-size: 30px; }
+        
+        .letter-test {
+            font-size: 150px;
+            line-height: 1.2;
+            display: block;
         }
     </style>
 </head>
 <body>
 
-    <div id="error-msg" class="status-box">
-        ⚠️ <strong>שים לב:</strong> הדפדפן חוסם את טעינת הפונט Heebo. <br>
-        הטקסט בצד שמאל מוצג בפונט גיבוי (כתב יד) במקום Heebo.
+    <div class="arial">
+        <p>אריאל (רגיל)</p>
+        <span class="letter-test">א</span>
+        <h1>שלום</h1>
     </div>
 
-    <div class="container">
-        <div class="card arial-side">
-            <h2>אריאל (Arial)</h2>
-            <p>זהו טקסט בפונט אריאל הסטנדרטי. האותיות "א" ו-"ל" מיושנות יותר.</p>
-            <p><strong>משפט לבדיקה:</strong><br>דג סקרן שט בים זך ולפתע מצא חברה.</p>
-        </div>
-
-        <div class="card heebo-side">
-            <h2>היבו (Heebo)</h2>
-            <p>זהו טקסט שצריך להיות ב-Heebo. אם אתה רואה כאן כתב יד מסולסל - הפונט לא נטען.</p>
-            <p><strong>משפט לבדיקה:</strong><br>דג סקרן שט בים זך ולפתע מצא חברה.</p>
-        </div>
+    <div class="heebo">
+        <p>Heebo (מודרני)</p>
+        <span class="letter-test">א</span>
+        <h1>שלום</h1>
     </div>
 
-    <script>
-        // בדיקה אוטומטית אם הפונט נטען
-        document.fonts.ready.then(function () {
-            // בדיקה האם הפונט 'Heebo' באמת זמין בדפדפן כרגע
-            if (!document.fonts.check('12px "Heebo"')) {
-                document.getElementById('error-msg').style.display = 'block';
-                document.querySelector('.heebo-side h2').innerText += ' (טעינה נכשלה!)';
-            }
-        });
-    </script>
 </body>
 </html>
